@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>球技大会ライブ</title>
+    <meta name="theme-color" content="#f05b3b" />
+    <link rel="stylesheet" href="./css/main.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <div>
+          <p class="eyebrow">School Tournament</p>
+          <h1 id="site-title">球技大会ライブ</h1>
+        </div>
+      </header>
+      <div id="system-banner" class="system-banner hidden"></div>
+      <main id="app" class="app-root" aria-live="polite"></main>
+    </div>
+
+    <div id="modal-backdrop" class="modal-backdrop hidden">
+      <div id="modal-root" class="modal-root" role="dialog" aria-modal="true" aria-labelledby="modal-title"></div>
+    </div>
+
+    <script src="./config.js"></script>
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
