@@ -35,16 +35,22 @@ function renderDayTabs(kind, targetId, days, activeDay) {
   `;
 }
 
-function renderWinnerBadge(isWinner) {
-  return isWinner ? '<span class="team-outcome">勝</span>' : "";
+function renderOutcomeBadge(isWinner, isLoser) {
+  if (isWinner) {
+    return '<span class="team-outcome is-win">勝</span>';
+  }
+  if (isLoser) {
+    return '<span class="team-outcome is-lose">負</span>';
+  }
+  return "";
 }
 
 function renderMatchup(view) {
   return `
     <span class="schedule-matchup">
-      <span class="schedule-team ${view.isTopWinner ? "is-winner" : view.isTopLoser ? "is-loser" : ""} ${view.topHighlighted ? "is-highlight" : ""}">${escapeHtml(view.topLabel)}${renderWinnerBadge(view.isTopWinner)}</span>
+      <span class="schedule-team ${view.isTopWinner ? "is-winner" : view.isTopLoser ? "is-loser" : ""} ${view.topHighlighted ? "is-highlight" : ""}">${escapeHtml(view.topLabel)}${renderOutcomeBadge(view.isTopWinner, view.isTopLoser)}</span>
       <span class="schedule-vs">VS</span>
-      <span class="schedule-team ${view.isBottomWinner ? "is-winner" : view.isBottomLoser ? "is-loser" : ""} ${view.bottomHighlighted ? "is-highlight" : ""}">${escapeHtml(view.bottomLabel)}${renderWinnerBadge(view.isBottomWinner)}</span>
+      <span class="schedule-team ${view.isBottomWinner ? "is-winner" : view.isBottomLoser ? "is-loser" : ""} ${view.bottomHighlighted ? "is-highlight" : ""}">${escapeHtml(view.bottomLabel)}${renderOutcomeBadge(view.isBottomWinner, view.isBottomLoser)}</span>
     </span>
   `;
 }
@@ -57,7 +63,7 @@ function renderScheduleGroup(items, emptyText) {
   return items
     .map(
       ({ match, event, view }) => `
-        <button class="schedule-line schedule-line-class ${view.resultLabel ? "is-completed" : ""} ${view.isPendingSync ? "is-pending" : ""}" data-match-id="${escapeHtml(match.match_id)}">
+        <button class="schedule-line schedule-line-class ${view.resultLabel ? "is-completed" : ""} ${view.isPendingSync ? "is-pending" : ""} ${view.selectedClassOutcome ? `outcome-${view.selectedClassOutcome}` : ""}" data-match-id="${escapeHtml(match.match_id)}">
           <span class="schedule-cell schedule-cell-time">${escapeHtml(view.formattedTime || "-")}</span>
           <span class="schedule-cell schedule-cell-event">${escapeHtml((event && event.display_name) || "-")}</span>
           <span class="schedule-cell schedule-cell-court">${escapeHtml(match.court || "-")}</span>

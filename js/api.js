@@ -97,5 +97,39 @@ export function createApi(config) {
         }),
       });
     },
+    async saveAdminEvent(body) {
+      if (mode !== "remote") {
+        const error = new Error("READ_ONLY");
+        error.payload = { errorCode: "READ_ONLY" };
+        throw error;
+      }
+      return fetchJson(gasUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+        },
+        body: JSON.stringify({
+          action: "saveAdminEvent",
+          ...body,
+        }),
+      });
+    },
+    async saveClassSettings(body) {
+      if (mode !== "remote") {
+        const error = new Error("READ_ONLY");
+        error.payload = { errorCode: "READ_ONLY" };
+        throw error;
+      }
+      return fetchJson(gasUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+        },
+        body: JSON.stringify({
+          action: "saveClassSettings",
+          ...body,
+        }),
+      });
+    },
   };
 }

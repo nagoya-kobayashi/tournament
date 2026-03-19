@@ -511,14 +511,29 @@ textarea {
 }
 
 .bracket-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   padding-bottom: 6px;
 }
 
 .bracket-canvas {
   position: relative;
   min-height: 180px;
+}
+
+.bracket-fit-frame {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  overflow: hidden;
+}
+
+.bracket-fit-inner {
+  position: relative;
+  max-width: 100%;
+}
+
+.bracket-stage {
+  transform-origin: top left;
 }
 
 .bracket-svg {
@@ -530,37 +545,56 @@ textarea {
 
 .bracket-connection {
   fill: none;
-  stroke: rgba(39, 64, 76, 0.2);
-  stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.bracket-connection.base {
+  stroke: rgba(39, 64, 76, 0.36);
+  stroke-width: 3;
+}
+
+.bracket-connection.base.state-pending {
+  stroke: rgba(39, 64, 76, 0.24);
   stroke-dasharray: 7 8;
 }
 
-.bracket-connection.state-resolved {
-  stroke: rgba(106, 181, 138, 0.7);
+.bracket-connection.fill {
   stroke-dasharray: none;
 }
 
-.bracket-connection.state-winning {
+.bracket-connection.fill.state-resolved {
+  stroke: rgba(106, 181, 138, 0.7);
+  stroke-width: 4;
+}
+
+.bracket-connection.fill.state-winning {
   stroke: var(--accent-deep);
   stroke-width: 5;
-  stroke-dasharray: none;
 }
 
 .bracket-match-chip {
   position: absolute;
-  display: grid;
-  gap: 2px;
-  width: 70px;
-  min-height: 36px;
-  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 26px;
+  padding: 0;
   border-radius: 12px;
   border: 1px solid rgba(39, 64, 76, 0.12);
   background: rgba(255, 255, 255, 0.98);
   color: var(--ink);
   text-align: center;
   box-shadow: 0 8px 14px rgba(39, 64, 76, 0.08);
+}
+
+.bracket-hidden-bridge {
+  position: absolute;
+  height: 0;
+  border-top: 3px solid rgba(39, 64, 76, 0.36);
+  transform: translateY(-1.5px);
+  pointer-events: none;
 }
 
 .bracket-match-chip.is-clickable {
@@ -591,9 +625,12 @@ textarea {
 }
 
 .chip-label {
+  display: block;
+  width: 100%;
   font-family: var(--font-display);
   font-size: 0.92rem;
   line-height: 1;
+  text-align: center;
 }
 
 .chip-status {
@@ -603,6 +640,9 @@ textarea {
 }
 
 .chip-sync {
+  position: absolute;
+  inset: auto auto -14px 50%;
+  transform: translateX(-50%);
   color: var(--accent-deep);
   font-size: 0.52rem;
   letter-spacing: 0.04em;
@@ -613,14 +653,14 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 28px;
-  padding: 4px 8px;
+  height: 28px;
+  padding: 0 8px;
   border: none;
   border-radius: 14px;
   background: transparent;
   color: var(--ink);
   font: inherit;
-  line-height: 1.25;
+  line-height: 1;
 }
 
 .bracket-slot.align-left {
@@ -654,6 +694,9 @@ textarea {
 
 .slot-text {
   flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .slot-badge,
@@ -727,9 +770,25 @@ textarea {
 }
 
 .schedule-line.is-completed {
-  border-color: rgba(43, 143, 103, 0.18);
+  border-color: rgba(96, 113, 122, 0.2);
   background:
-    linear-gradient(180deg, rgba(245,255,249,0.98), rgba(246,251,247,0.92));
+    linear-gradient(180deg, rgba(243,245,247,0.98), rgba(235,239,242,0.92));
+}
+
+.schedule-line-event.is-completed {
+  color: rgba(39, 64, 76, 0.88);
+}
+
+.schedule-line-class.outcome-win {
+  border-color: rgba(43, 143, 103, 0.28);
+  background:
+    linear-gradient(180deg, rgba(232,255,240,0.98), rgba(220,247,230,0.94));
+}
+
+.schedule-line-class.outcome-lose {
+  border-color: rgba(96, 113, 122, 0.2);
+  background:
+    linear-gradient(180deg, rgba(243,245,247,0.98), rgba(235,239,242,0.92));
 }
 
 .schedule-line.is-pending {
@@ -897,6 +956,10 @@ textarea {
   margin-top: 8px;
 }
 
+.winner-choice-grid.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .winner-choice-card {
   position: relative;
   display: flex;
@@ -912,7 +975,8 @@ textarea {
   transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 
-.winner-choice-card.is-selected {
+.winner-choice-card.is-selected,
+.winner-choice-card:has(.winner-choice-input:checked) {
   border-color: transparent;
   background: linear-gradient(135deg, #ff8358, #ff9a67);
   color: #fffefb;
@@ -927,6 +991,11 @@ textarea {
 .winner-choice-card:hover {
   transform: translateY(-1px);
   box-shadow: 0 10px 18px rgba(39, 64, 76, 0.08);
+}
+
+.winner-choice-card:has(.winner-choice-input:focus-visible) {
+  outline: 2px solid rgba(255, 131, 88, 0.42);
+  outline-offset: 2px;
 }
 
 .winner-choice-input {
@@ -976,6 +1045,11 @@ textarea {
   border-color: rgba(200, 93, 67, 0.24);
   color: var(--danger);
   background: rgba(255, 255, 255, 0.92);
+}
+
+.team-outcome.is-lose {
+  background: rgba(96, 113, 122, 0.14);
+  color: rgba(96, 113, 122, 0.96);
 }
 
 .error-box {
@@ -1076,4 +1150,302 @@ textarea {
   .modal-actions {
     flex-direction: column-reverse;
   }
+}
+
+.bracket-slot.is-selected {
+  outline: 2px solid #ef7a43;
+  outline-offset: 2px;
+}
+
+.bracket-slot.is-seeded {
+  background: rgba(255, 243, 216, 0.92);
+  border: 1px solid rgba(239, 122, 67, 0.28);
+}
+
+.seed-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #ef7a43;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.admin-panel,
+.admin-subpanel {
+  overflow: visible;
+}
+
+.admin-layout-grid {
+  align-items: start;
+}
+
+.admin-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.compact-grid {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #47606d;
+}
+
+.text-input,
+.admin-textarea {
+  width: 100%;
+  border: 1px solid rgba(68, 104, 117, 0.22);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 11px 13px;
+  font: inherit;
+  color: #23363e;
+}
+
+.admin-textarea {
+  min-height: 180px;
+  resize: vertical;
+}
+
+.admin-action-row {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.token-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seed-summary {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 245, 230, 0.88);
+}
+
+.seed-summary.is-active {
+  border: 1px solid rgba(239, 122, 67, 0.32);
+}
+
+.admin-source-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-source-row {
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.bracket-slot-inline-editor {
+  position: absolute;
+  z-index: 12;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 16px;
+  background: rgba(255, 252, 247, 0.98);
+  border: 1px solid rgba(239, 122, 67, 0.28);
+  box-shadow: 0 18px 30px rgba(39, 64, 76, 0.14);
+}
+
+.bracket-inline-input {
+  min-width: 0;
+  padding: 9px 11px;
+  border-radius: 12px;
+}
+
+.bracket-inline-token-row {
+  gap: 6px;
+}
+
+.bracket-inline-token-row .filter-chip {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.admin-timetable-wrap,
+.league-grid-wrap {
+  overflow-x: auto;
+}
+
+.admin-timetable-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.admin-timetable-day-block {
+  display: grid;
+  gap: 12px;
+}
+
+body.is-timetable-selecting .admin-timetable-grid {
+  user-select: none;
+}
+
+body.is-timetable-selecting .admin-timetable-grid .admin-cell-input {
+  pointer-events: none;
+}
+
+.admin-timetable-grid,
+.league-grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.admin-timetable-grid th,
+.admin-timetable-grid td,
+.league-grid th,
+.league-grid td {
+  border: 1px solid rgba(68, 104, 117, 0.18);
+  padding: 0;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.admin-timetable-grid th {
+  background: rgba(236, 242, 244, 0.96);
+}
+
+.admin-timetable-grid td.is-selected {
+  background: rgba(255, 154, 103, 0.18);
+}
+
+.admin-timetable-grid td.is-range-top {
+  border-top: 3px solid #ef7a43;
+}
+
+.admin-timetable-grid td.is-range-bottom {
+  border-bottom: 3px solid #ef7a43;
+}
+
+.admin-timetable-grid td.is-range-left {
+  border-left: 3px solid #ef7a43;
+}
+
+.admin-timetable-grid td.is-range-right {
+  border-right: 3px solid #ef7a43;
+}
+
+.admin-timetable-head-cell {
+  display: grid;
+  grid-template-columns: 44px minmax(96px, 1fr);
+  align-items: stretch;
+}
+
+.admin-timetable-row-head {
+  grid-template-columns: 44px minmax(92px, 1fr);
+}
+
+.admin-cell-input {
+  width: 100%;
+  min-width: 120px;
+  border: 0;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.98);
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+.admin-head-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-left: 1px solid rgba(68, 104, 117, 0.18);
+  border-radius: 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: none;
+}
+
+.admin-cell-input.is-anchor {
+  background: rgba(255, 247, 240, 0.98);
+  box-shadow: inset 0 0 0 2px rgba(239, 122, 67, 0.42);
+}
+
+.admin-cell-input:focus,
+.admin-head-input:focus {
+  outline: none;
+  background: rgba(255, 250, 244, 0.98);
+}
+
+.admin-select-header {
+  width: 100%;
+  padding: 8px 6px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  cursor: pointer;
+}
+
+.admin-inline-head-fields {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.admin-inline-head-input {
+  max-width: 180px;
+}
+
+.admin-inline-head-count {
+  max-width: 88px;
+}
+
+.admin-day-corner {
+  min-width: 108px;
+  font-weight: 800;
+  color: #314852;
+}
+
+.admin-day-apply {
+  display: flex;
+  align-items: end;
+}
+
+.admin-save-bottom-panel {
+  margin-top: 18px;
+}
+
+.admin-select-row {
+  text-align: left;
+}
+
+.league-cell.diagonal {
+  background: rgba(210, 219, 222, 0.34);
+  color: #7d8f95;
+}
+
+.league-cell.is-clickable {
+  cursor: pointer;
+  background: rgba(255, 248, 235, 0.9);
+}
+
+.nav-chip.static {
+  cursor: default;
 }

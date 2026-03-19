@@ -45,6 +45,7 @@ var MATCH_HEADERS = [
   "resolved_top_team_id",
   "resolved_bottom_team_id",
   "status",
+  "winner_slot",
   "winner_team_id",
   "loser_team_id",
   "score_text",
@@ -103,6 +104,12 @@ function doPost(e) {
     var action = payload.action || "";
     if (action === "setupCsvBundle") {
       return jsonOutput_(setupFromCsvTexts(payload.csvTexts || {}));
+    }
+    if (action === "saveAdminEvent") {
+      return jsonOutput_(saveAdminEvent_(payload));
+    }
+    if (action === "saveClassSettings") {
+      return jsonOutput_(saveClassSettings_(payload));
     }
     if (action === "submitResult") {
       return jsonOutput_(submitResult_(payload));
@@ -274,6 +281,7 @@ function buildBootstrapResponse_() {
     events: getRows_(SHEET_NAMES.EVENTS),
     teams: getRows_(SHEET_NAMES.TEAMS),
     matches: getRows_(SHEET_NAMES.MATCHES),
+    classNames: parseClassNamesCsv_(config.class_names_csv || ""),
     announcements: config.announcement_text ? [config.announcement_text] : [],
   };
   logEvent_({
@@ -283,6 +291,108 @@ function buildBootstrapResponse_() {
     message: "bootstrap served",
   });
   return payload;
+}
+
+function parseClassNamesCsv_(value) {
+  return String(value || "")
+    .split(/[\r\n,\t ]+/)
+    .map(function(item) {
+      return String(item || "").trim();
+    })
+    .filter(function(item) {
+      return !!item;
+    })
+    .filter(function(item, index, values) {
+      return values.indexOf(item) === index;
+    })
+    .sort();
+}
+
+function pickRowByHeaders_(row, headers) {
+  var picked = {};
+  headers.forEach(function(header) {
+    picked[header] = row && row[header] != null ? String(row[header]) : "";
+  });
+  return picked;
+}
+
+function saveAdminEvent_(payload) {
+  var eventRow = pickRowByHeaders_(payload.event || {}, EVENT_HEADERS);
+  if (!eventRow.event_id) {
+    return errorResponse_("SERVER_ERROR", "event_id is required");
+  }
+
+  var events = getRows_(SHEET_NAMES.EVENTS).filter(function(row) {
+    return row.event_id !== eventRow.event_id && row.event_id !== String(payload.originalEventId || "");
+  });
+  events.push(eventRow);
+  events.sort(function(a, b) {
+    return Number(a.display_order || 0) - Number(b.display_order || 0);
+  });
+
+  var teams = getRows_(SHEET_NAMES.TEAMS).filter(function(row) {
+    return row.event_id !== eventRow.event_id && row.event_id !== String(payload.originalEventId || "");
+  });
+  (payload.teams || []).forEach(function(row) {
+    teams.push(pickRowByHeaders_(row, TEAM_HEADERS));
+  });
+
+  var matches = getRows_(SHEET_NAMES.MATCHES).filter(function(row) {
+    return row.event_id !== eventRow.event_id && row.event_id !== String(payload.originalEventId || "");
+  });
+  var nextEventMatches = (payload.matches || []).map(function(row) {
+    return pickRowByHeaders_(row, MATCH_HEADERS);
+  });
+  recalculateEventMatches_(nextEventMatches);
+  matches = matches.concat(nextEventMatches);
+
+  setRows_(SHEET_NAMES.EVENTS, EVENT_HEADERS, events);
+  setRows_(SHEET_NAMES.TEAMS, TEAM_HEADERS, teams);
+  setRows_(SHEET_NAMES.MATCHES, MATCH_HEADERS, matches);
+
+  var dataVersion = nextDataVersion_();
+  updateConfigValue_("data_version", dataVersion, "Updated by saveAdminEvent");
+
+  logEvent_({
+    level: "info",
+    event_name: "admin_event_saved",
+    event_id: eventRow.event_id,
+    status: "ok",
+    message: "admin event saved",
+    sanitized_payload_json: JSON.stringify({
+      eventId: eventRow.event_id,
+      teams: (payload.teams || []).length,
+      matches: nextEventMatches.length,
+    }),
+  });
+
+  var bootstrap = buildBootstrapResponse_();
+  bootstrap.savedEventId = eventRow.event_id;
+  bootstrap.dataVersion = dataVersion;
+  return bootstrap;
+}
+
+function saveClassSettings_(payload) {
+  var classNames = (payload.classNames || []).map(function(item) {
+    return String(item || "").trim();
+  }).filter(function(item, index, values) {
+    return !!item && values.indexOf(item) === index;
+  }).sort();
+
+  updateConfigValue_("class_names_csv", classNames.join("\n"), "Updated by class settings editor");
+  updateConfigValue_("data_version", nextDataVersion_(), "Updated by saveClassSettings");
+
+  logEvent_({
+    level: "info",
+    event_name: "admin_class_settings_saved",
+    status: "ok",
+    message: "class settings saved",
+    sanitized_payload_json: JSON.stringify({
+      count: classNames.length,
+    }),
+  });
+
+  return buildBootstrapResponse_();
 }
 
 function buildMetaResponse_() {
@@ -319,7 +429,7 @@ function submitResult_(payload) {
   try {
     validateEditorPin_(payload.editorPin);
 
-    var headers = getSheet_(SHEET_NAMES.MATCHES).getDataRange().getValues()[0];
+    var headers = MATCH_HEADERS.slice();
     var allMatches = getRows_(SHEET_NAMES.MATCHES);
     var byId = buildMatchesById_(allMatches);
     var targetMatch = byId[payload.matchId];
@@ -334,21 +444,18 @@ function submitResult_(payload) {
     recalculateEventMatches_(eventMatches);
 
     targetMatch = buildMatchesById_(eventMatches)[payload.matchId];
-    var hadWinner = !!targetMatch.winner_team_id;
+    var hadWinner = !!(targetMatch.winner_slot || targetMatch.winner_team_id);
     if (payload.clearResult) {
+      targetMatch.winner_slot = "";
       targetMatch.winner_team_id = "";
       targetMatch.loser_team_id = "";
       targetMatch.score_text = "";
       targetMatch.correction_note = "";
     } else {
-      if (!targetMatch.resolved_top_team_id || !targetMatch.resolved_bottom_team_id) {
-        return errorResponse_("MATCH_NOT_READY", "Participants are not ready");
+      if (payload.winnerSlot !== "top" && payload.winnerSlot !== "bottom") {
+        return errorResponse_("MATCH_NOT_READY", "Winner slot is required");
       }
-      if (payload.winnerTeamId !== targetMatch.resolved_top_team_id && payload.winnerTeamId !== targetMatch.resolved_bottom_team_id) {
-        return errorResponse_("WINNER_NOT_IN_MATCH", "Winner not in match");
-      }
-      targetMatch.winner_team_id = payload.winnerTeamId;
-      targetMatch.loser_team_id = payload.winnerTeamId === targetMatch.resolved_top_team_id ? targetMatch.resolved_bottom_team_id : targetMatch.resolved_top_team_id;
+      targetMatch.winner_slot = payload.winnerSlot;
       targetMatch.score_text = payload.scoreText || "";
       targetMatch.correction_note = hadWinner ? (payload.correctionNote || "corrected") : (payload.correctionNote || "");
     }
@@ -379,6 +486,7 @@ function submitResult_(payload) {
       message: payload.clearResult ? "result deleted" : hadWinner ? "result corrected" : "winner saved",
       sanitized_payload_json: JSON.stringify({
         winnerTeamId: payload.winnerTeamId,
+        winnerSlot: payload.winnerSlot || "",
         scoreText: payload.scoreText || "",
         clearResult: !!payload.clearResult,
       }),
@@ -462,8 +570,17 @@ function recalculateEventMatches_(matches) {
     var bottomTeam = match.resolved_bottom_team_id;
     var topIsBye = match.slot_top_type === "bye";
     var bottomIsBye = match.slot_bottom_type === "bye";
+    var winnerSlot = normalizeWinnerSlot_(match.winner_slot);
 
-    if (match.winner_team_id && match.winner_team_id !== topTeam && match.winner_team_id !== bottomTeam) {
+    if (!winnerSlot) {
+      if (match.winner_team_id === topTeam && topTeam) {
+        winnerSlot = "top";
+      } else if (match.winner_team_id === bottomTeam && bottomTeam) {
+        winnerSlot = "bottom";
+      }
+    }
+
+    if (match.winner_team_id && !winnerSlot && match.winner_team_id !== topTeam && match.winner_team_id !== bottomTeam) {
       match.winner_team_id = "";
       match.loser_team_id = "";
       match.score_text = "";
@@ -472,22 +589,32 @@ function recalculateEventMatches_(matches) {
       match.updated_by_session = "";
     }
 
-    if (!match.winner_team_id) {
+    if (!winnerSlot) {
       if (topTeam && bottomIsBye) {
+        winnerSlot = "top";
         match.winner_team_id = topTeam;
         match.loser_team_id = "";
       } else if (bottomTeam && topIsBye) {
+        winnerSlot = "bottom";
         match.winner_team_id = bottomTeam;
         match.loser_team_id = "";
       }
     }
 
-    if (match.winner_team_id) {
-      if (match.winner_team_id === topTeam) {
-        match.loser_team_id = bottomTeam;
-      } else if (match.winner_team_id === bottomTeam) {
-        match.loser_team_id = topTeam;
-      }
+    match.winner_slot = winnerSlot;
+
+    if (winnerSlot === "top") {
+      match.winner_team_id = topTeam;
+      match.loser_team_id = bottomTeam;
+    } else if (winnerSlot === "bottom") {
+      match.winner_team_id = bottomTeam;
+      match.loser_team_id = topTeam;
+    } else {
+      match.winner_team_id = "";
+      match.loser_team_id = "";
+    }
+
+    if (winnerSlot) {
       match.status = match.correction_note ? "corrected" : "completed";
     } else if (topTeam && bottomTeam) {
       match.status = "ready";
@@ -495,6 +622,10 @@ function recalculateEventMatches_(matches) {
       match.status = "scheduled";
     }
   });
+}
+
+function normalizeWinnerSlot_(value) {
+  return value === "top" || value === "bottom" ? value : "";
 }
 
 function logEvent_(payload) {
