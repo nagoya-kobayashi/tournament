@@ -16,6 +16,7 @@ export function renderHome(data) {
           <h3>${escapeHtml(event.display_name)}</h3>
           <div class="event-card-actions">
             <a class="button primary" data-nav href="${toHref("event", event.event_id)}">トーナメントを見る</a>
+            <a class="button ghost" data-nav href="${toHref("admin-event", event.event_id)}">編集</a>
           </div>
         </article>
       `
@@ -66,6 +67,9 @@ export function renderHome(data) {
           <div>
             <h2 class="panel-title">種目一覧</h2>
           </div>
+          <div class="toolbar-actions">
+            <a class="button ghost" data-nav href="${toHref("admin-event", "new")}">種目追加</a>
+          </div>
         </div>
         <div class="events-grid">
           ${eventCards || '<div class="empty-state">この条件に一致する種目はありません。</div>'}
@@ -76,6 +80,9 @@ export function renderHome(data) {
         <div class="panel-header">
           <div>
             <h2 class="panel-title">クラス別日程</h2>
+          </div>
+          <div class="toolbar-actions">
+            <a class="button ghost" data-nav href="${toHref("admin-classes")}">クラス名設定</a>
           </div>
         </div>
         <form class="search-row" data-form="class-jump">

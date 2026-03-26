@@ -6,10 +6,10 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function renderWinnerChoice(teamId, label, selected, disabled) {
+function renderWinnerChoice(slot, label, selected, disabled) {
   return `
     <label class="winner-choice-card ${selected ? "is-selected" : ""} ${disabled ? "is-disabled" : ""}">
-      <input class="winner-choice-input" type="radio" name="winnerTeamId" value="${escapeHtml(teamId)}" ${selected ? "checked" : ""} ${disabled ? "disabled" : ""} />
+      <input class="winner-choice-input" type="radio" name="winnerSlot" value="${escapeHtml(slot)}" ${selected ? "checked" : ""} ${disabled ? "disabled" : ""} />
       <span class="winner-choice-text">${escapeHtml(label)}</span>
     </label>
   `;
@@ -20,17 +20,20 @@ export function renderResultModal(data) {
     return "";
   }
 
-  const canPickWinner = data.view.topTeamId && data.view.bottomTeamId && !data.isReadOnly;
-  const canDelete = !data.isReadOnly && !!data.match.winner_team_id;
-  const memoValue = data.match.correction_note || data.match.score_text || "";
+  const winnerChoices = data.availableWinnerChoices || [];
+  const canPickWinner = winnerChoices.length > 0 && !data.isReadOnly;
+  const canDelete = !data.isReadOnly && !!(data.match.winner_slot || data.match.winner_team_id);
+  const memoValue = data.draft.memo || "";
   const pinDisabled = !data.requireEditorPin || data.isReadOnly;
+  const selectedWinnerSlot = data.draft.winnerSlot || "";
+  const editorPinValue = data.draft.editorPin || "";
 
   return `
     ${
       data.isReadOnly
         ? '<div class="error-box">read-only モードのため結果は送信できません。</div>'
-        : !data.view.topTeamId || !data.view.bottomTeamId
-          ? '<div class="error-box">参加者が確定していないため、まだ結果登録できません。</div>'
+        : winnerChoices.length === 0
+          ? '<div class="error-box">参加者が1つも確定していないため、まだ結果登録できません。</div>'
           : ""
     }
 
@@ -39,9 +42,10 @@ export function renderResultModal(data) {
     <form id="result-form" class="form-row">
       <label>
         勝者クラス
-        <div class="winner-choice-grid">
-          ${renderWinnerChoice(data.view.topTeamId, data.view.topLabel, data.match.winner_team_id === data.view.topTeamId, !canPickWinner)}
-          ${renderWinnerChoice(data.view.bottomTeamId, data.view.bottomLabel, data.match.winner_team_id === data.view.bottomTeamId, !canPickWinner)}
+        <div class="winner-choice-grid ${winnerChoices.length === 1 ? "is-single" : ""}">
+          ${winnerChoices
+            .map((choice) => renderWinnerChoice(choice.slot, choice.label, selectedWinnerSlot === choice.slot, !canPickWinner))
+            .join("")}
         </div>
       </label>
 
@@ -52,7 +56,7 @@ export function renderResultModal(data) {
 
       <label>
         PIN
-        <input type="password" name="editorPin" autocomplete="current-password" placeholder="${data.requireEditorPin ? "入力担当者用 PIN" : "現在は不要"}" ${pinDisabled ? "disabled" : ""} />
+        <input type="password" name="editorPin" autocomplete="current-password" placeholder="${data.requireEditorPin ? "入力担当者用 PIN" : "現在は不要"}" value="${escapeHtml(editorPinValue)}" ${pinDisabled ? "disabled" : ""} />
       </label>
 
       <div class="modal-submit-stack">

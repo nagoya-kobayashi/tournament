@@ -19,6 +19,10 @@ const FINAL_GAP = 34;
 const TREE_GAP_UNITS = 1.2;
 const MATCH_INPUT_GAP = 0;
 const FINAL_RAISE = 20;
+const THIRD_PLACE_CONNECTOR_GAP = 96;
+const THIRD_PLACE_CHIP_RAISE = 12;
+const THIRD_PLACE_SLOT_OFFSET = 0;
+const THIRD_PLACE_LABEL_WIDTH = 96;
 
 function sortByDisplayOrder(a, b) {
   return Number(a.display_order) - Number(b.display_order);
@@ -204,6 +208,7 @@ function buildConnection(input, match, slot, sourceX, sourceY, parentX, parentY,
       branchX: options.branchX,
     }),
     state: connectionState(input, match, slot, allMatchMap),
+    hideInEventView: input.kind === "leaf" && input.slotType === "bye",
   };
 }
 
@@ -404,27 +409,31 @@ function buildForestLayout(matches, allMatchMap) {
 
 function buildThirdPlaceLayout(matches, allMatchMap) {
   const match = [...matches].sort(sortByDisplayOrder)[0];
-  const centerX = PADDING_X + LABEL_WIDTH + 70;
-  const centerY = PADDING_Y + STEP_Y;
+  const lineY = PADDING_Y + STEP_Y;
+  const centerX = PADDING_X + LABEL_WIDTH + THIRD_PLACE_CONNECTOR_GAP;
+  const nodeBottomY = lineY - THIRD_PLACE_CHIP_RAISE;
+  const nodeTop = nodeBottomY - CHIP_HEIGHT;
+  const slotTop = lineY - THIRD_PLACE_SLOT_OFFSET;
   const node = {
     kind: "node",
     side: "center",
     match,
     left: centerX,
-    top: centerY - CHIP_HEIGHT / 2,
+    top: nodeTop,
     right: centerX + CHIP_WIDTH,
     centerX: centerX + CHIP_WIDTH / 2,
-    centerY,
+    centerY: nodeTop + CHIP_HEIGHT / 2,
   };
+  const connectorX = node.centerX;
   const leaves = [
     {
       kind: "leaf",
       side: "left",
-      left: node.left - LABEL_GAP - LABEL_WIDTH,
-      top: centerY - LABEL_HEIGHT / 2,
-      right: node.left - LABEL_GAP,
-      centerY,
-      width: LABEL_WIDTH,
+      left: PADDING_X,
+      top: slotTop,
+      right: PADDING_X + THIRD_PLACE_LABEL_WIDTH,
+      centerY: lineY,
+      width: THIRD_PLACE_LABEL_WIDTH,
       align: "left",
       slot: "top",
       slotType: match.slot_top_type,
@@ -434,11 +443,11 @@ function buildThirdPlaceLayout(matches, allMatchMap) {
     {
       kind: "leaf",
       side: "right",
-      left: node.right + LABEL_GAP,
-      top: centerY - LABEL_HEIGHT / 2,
-      right: node.right + LABEL_GAP + LABEL_WIDTH,
-      centerY,
-      width: LABEL_WIDTH,
+      left: connectorX + THIRD_PLACE_CONNECTOR_GAP,
+      top: slotTop,
+      right: connectorX + THIRD_PLACE_CONNECTOR_GAP + THIRD_PLACE_LABEL_WIDTH,
+      centerY: lineY,
+      width: THIRD_PLACE_LABEL_WIDTH,
       align: "right",
       slot: "bottom",
       slotType: match.slot_bottom_type,
@@ -450,12 +459,27 @@ function buildThirdPlaceLayout(matches, allMatchMap) {
   return {
     variant: "third_place",
     width: leaves[1].right + PADDING_X,
-    height: node.top + CHIP_HEIGHT + PADDING_Y,
+    height: Math.max(lineY + LABEL_HEIGHT / 2, node.top + CHIP_HEIGHT) + PADDING_Y,
     nodes: [node],
     leaves,
     connections: [
-      buildConnection(leaves[0], match, "top", leaves[0].right, leaves[0].centerY, node.left, node.centerY, allMatchMap),
-      buildConnection(leaves[1], match, "bottom", leaves[1].left, leaves[1].centerY, node.right, node.centerY, allMatchMap),
+      {
+        d: straightPath(leaves[0].right, leaves[0].centerY, connectorX, lineY),
+        fillD: straightPath(leaves[0].right, leaves[0].centerY, connectorX, lineY),
+        state: connectionState(leaves[0], match, "top", allMatchMap),
+        hideInEventView: leaves[0].slotType === "bye",
+      },
+      {
+        d: straightPath(leaves[1].left, leaves[1].centerY, connectorX, lineY),
+        fillD: straightPath(leaves[1].left, leaves[1].centerY, connectorX, lineY),
+        state: connectionState(leaves[1], match, "bottom", allMatchMap),
+        hideInEventView: leaves[1].slotType === "bye",
+      },
+      {
+        d: straightPath(connectorX, lineY, connectorX, node.top + CHIP_HEIGHT + 4),
+        fillD: straightPath(connectorX, lineY, connectorX, node.top + CHIP_HEIGHT + 4),
+        state: overallMatchState(match),
+      },
     ],
   };
 }

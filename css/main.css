@@ -728,6 +728,10 @@ textarea {
   outline-offset: 2px;
 }
 
+.variant-third_place .bracket-slot {
+  padding-inline: 0;
+}
+
 .schedule-grid {
   display: grid;
   gap: 10px;

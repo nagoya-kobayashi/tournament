@@ -733,26 +733,52 @@ function buildMainLeafSources(draft, teamRows) {
   return leaves;
 }
 
-function buildDefaultConsolationBracket(draft) {
+function buildDefaultConsolationSourceMatches(draft) {
   const teamRows = buildTeamRows(draft);
-  const main = buildEliminationSection(draft.eventId, "main", buildMatchLabelFactory(""), buildMainLeafSources(draft, teamRows), 1);
-  const sources = main.firstRoundIds
-    .map((matchId, index) => {
-      const match = main.matches.find((item) => item.match_id === matchId);
-      if (!match || match._hideChip) {
-        return null;
-      }
-      return sanitizeBracketSource(
-        {
-          sourceId: buildSourceId("consolation", index),
-          kind: "loser",
-          value: match.match_id,
-        },
-        index,
-        "consolation"
-      );
-    })
-    .filter(Boolean);
+  const main = buildEliminationSection(
+    draft.eventId,
+    "main",
+    buildMatchLabelFactory(""),
+    buildMainLeafSources(draft, teamRows),
+    1
+  );
+  recalculateMatches(main.matches);
+  const visibleMatches = main.matches
+    .filter((match) => !match._hideChip)
+    .sort((a, b) => Number(a.display_order || 0) - Number(b.display_order || 0));
+  const firstVisibleMatchIdByTeamId = new Map();
+  visibleMatches.forEach((match) => {
+    if (match.resolved_top_team_id && !firstVisibleMatchIdByTeamId.has(match.resolved_top_team_id)) {
+      firstVisibleMatchIdByTeamId.set(match.resolved_top_team_id, match.match_id);
+    }
+    if (match.resolved_bottom_team_id && !firstVisibleMatchIdByTeamId.has(match.resolved_bottom_team_id)) {
+      firstVisibleMatchIdByTeamId.set(match.resolved_bottom_team_id, match.match_id);
+    }
+  });
+  const targetMatchIds = new Set(
+    teamRows
+      .map((team) => firstVisibleMatchIdByTeamId.get(team.team_id))
+      .filter(Boolean)
+  );
+  return visibleMatches.filter((match) => targetMatchIds.has(match.match_id));
+}
+
+function buildDefaultConsolationSources(draft) {
+  return buildDefaultConsolationSourceMatches(draft).map((match, index) =>
+    sanitizeBracketSource(
+      {
+        sourceId: buildSourceId("consolation", index),
+        kind: "loser",
+        value: match.match_id,
+      },
+      index,
+      "consolation"
+    )
+  );
+}
+
+function buildDefaultConsolationBracket(draft) {
+  const sources = buildDefaultConsolationSources(draft);
   return sanitizeEditableBracket(
     {
       id: "consolation",
@@ -871,24 +897,7 @@ function buildTournamentMatches(draft, teamRows) {
   }
 
   if (draft.consolationBracket) {
-    const mainFirstRoundMap = new Map(main.matches.map((match) => [match.match_id, match]));
-    const defaultSources = main.firstRoundIds
-      .map((matchId, index) => {
-        const match = mainFirstRoundMap.get(matchId);
-        if (!match || match._hideChip) {
-          return null;
-        }
-        return sanitizeBracketSource(
-          {
-            sourceId: buildSourceId("consolation", index),
-            kind: "loser",
-            value: match.match_id,
-          },
-          index,
-          "consolation"
-        );
-      })
-      .filter(Boolean);
+    const defaultSources = buildDefaultConsolationSources(draft);
     const bracket = sanitizeEditableBracket(
       {
         ...draft.consolationBracket,
