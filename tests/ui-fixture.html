@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Preparing UI fixture</title>
+<script src="../js/initial-data.js"></script>
+<script src="../js/model.js"></script>
+<script>
+  const M = window.MatchboardModel;
+  const params = new URLSearchParams(location.search);
+  const useFullInitialData = params.get("full") === "1";
+  const state = M.createInitialState();
+  if (!useFullInitialData) {
+    state.competitions.forEach((competition, competitionIndex) => {
+      state.classes.forEach((classInfo, classIndex) => {
+        state.entries[competition.id][classInfo.id] = classIndex < (competitionIndex === 1 ? 6 : 4) ? (classIndex === 1 && competitionIndex === 0 ? 2 : 1) : 0;
+      });
+      state.draws[competition.id] = M.createDraw(state, competition.id, { groupCount: competition.format === "hybrid" ? 2 : 1 });
+    });
+  }
+  const othello = state.competitions[0];
+  const othelloMatches = M.buildMatches(state, othello.id).filter((match) => match.phase === "tournament");
+  const openingMatch = useFullInitialData
+    ? othelloMatches.find((match) => match.number === 1)
+    : othelloMatches.find((match) => match.round === 0 && M.isPlayableMatch(state, match));
+  state.results[openingMatch.id] = { winnerSide: "a", scoreA: "1", scoreB: "0", updatedAt: new Date().toISOString() };
+  const nextMatch = othelloMatches.find((match) => match.round === 1 && [match.sourceA, match.sourceB].some((source) => source && source.matchId === openingMatch.id));
+  const openingSide = nextMatch.sourceA.matchId === openingMatch.id ? "a" : "b";
+  state.results[nextMatch.id] = { winnerSide: openingSide === "a" ? "b" : "a", scoreA: openingSide === "a" ? "0" : "1", scoreB: openingSide === "b" ? "0" : "1", updatedAt: new Date().toISOString() };
+  if (!useFullInitialData) state.schedule = M.autoSchedule(state, {}).schedule;
+  localStorage.setItem("indoor-matchboard-state-v2", JSON.stringify(state));
+  const route = params.get("route") || "live";
+  if (params.get("open") === "1") {
+    localStorage.setItem("indoor-matchboard-view-prefs-v1", JSON.stringify({
+      openDays: { [`${route}:label:1日目`]: true, [`${route}:label:2日目`]: true },
+      showPossible: params.get("possible") === "1",
+    }));
+  }
+  location.replace(`../index.html#${route}`);
+</script>

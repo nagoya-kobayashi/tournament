@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>Matchboard model tests</title>
+<style>body{font:14px system-ui;padding:24px} .pass{color:#17633d}.fail{color:#a32d25} pre{white-space:pre-wrap}</style>
+<body>
+  <h1>Matchboard model tests</h1>
+  <pre id="results">RUNNING</pre>
+  <script src="../js/model.js"></script>
+  <script>
+    (function () {
+      const M = window.MatchboardModel;
+      const output = [];
+      let failures = 0;
+      function assert(condition, name, detail) {
+        if (!condition) { failures += 1; output.push(`FAIL: ${name}${detail ? ` — ${detail}` : ""}`); }
+        else output.push(`PASS: ${name}`);
+      }
+      function makeState(teamCount) {
+        const state = M.createInitialState();
+        state.competitions = [state.competitions[0]];
+        state.classes = [
+          { id: "c1", name: "1B" }, { id: "c2", name: "2A" },
+          { id: "c3", name: "2B" }, { id: "c4", name: "3A" },
+        ];
+        const competition = state.competitions[0];
+        competition.id = "test";
+        competition.format = "tournament";
+        competition.duration = 10;
+        const start = new Date("2026-09-12T09:00:00");
+        competition.slots = M.makeSlots(12, 10, start);
+        state.entries = { test: { c1: teamCount > 0 ? 1 : 0, c2: teamCount > 1 ? 1 : 0, c3: teamCount > 2 ? 1 : 0, c4: teamCount > 3 ? 1 : 0 } };
+        state.draws = {}; state.results = {}; state.schedule = {};
+        return state;
+      }
+
+      const naming = makeState(1);
+      naming.entries.test.c1 = 2;
+      assert(M.teamsForCompetition(naming, "test").map((t) => t.name).join(",") === "1B①,1B②", "複数エントリーは丸数字付き");
+      naming.entries.test.c1 = 1;
+      assert(M.teamsForCompetition(naming, "test")[0].name === "1B", "単独エントリーには接尾辞なし");
+
+      const seeded = makeState(4);
+      seeded.entries.test.c1 = 2;
+      seeded.draws.test = M.createDraw(seeded, "test");
+      const seededFirstRound = M.buildMatches(seeded, "test").filter((match) => match.round === 0);
+      assert(seededFirstRound.every((match) => {
+        const p = M.participantsForMatch(seeded, match);
+        return !(p.a.type === "bye" && p.b.type === "bye");
+      }), "シード同士が当たらないように配置");
+
+      const state = makeState(4);
+      state.draws.test = M.createDraw(state, "test");
+      const matches = M.buildMatches(state, "test");
+      assert(state.draws.test.tournament.size === 4 && matches.length === 3, "4チームのトーナメントを生成");
+      const firstA = matches.find((m) => m.round === 0 && m.index === 0);
+      const firstB = matches.find((m) => m.round === 0 && m.index === 1);
+      const final = matches.find((m) => m.round === 1);
+      state.results[firstA.id] = { winnerSide: "a", scoreA: "1", scoreB: "0" };
+      let finalParticipants = M.participantsForMatch(state, final);
+      assert(finalParticipants.a.type === "team" && finalParticipants.b.type === "pending", "片側未定の決勝参加者を解決");
+      state.results[final.id] = { winnerSide: "b", scoreA: "0", scoreB: "1" };
+      assert(M.winnerOfMatch(state, final).type === "pending", "未定側を勝者として先行入力可能");
+      state.results[firstB.id] = { winnerSide: "b", scoreA: "0", scoreB: "1" };
+      finalParticipants = M.participantsForMatch(state, final);
+      const expectedWinner = M.participantsForMatch(state, firstB).b.team.id;
+      assert(finalParticipants.b.type === "team" && M.winnerOfMatch(state, final).team.id === expectedWinner, "前提結果の確定後に先行入力済み試合へチームを伝播");
+      delete state.results[firstB.id];
+      assert(M.participantsForMatch(state, final).b.type === "pending", "前提結果の取消を後続へ反映");
+
+      delete state.results[final.id];
+      const scheduled = M.autoSchedule(state, {});
+      assert(scheduled.unassigned.length === 0, "全試合を自動割り振り");
+      assert(M.scheduleConflicts(state, scheduled.schedule).length === 0, "同時出場と移動1枠の競合なし");
+      const aTime = new Date(state.competitions[0].slots.find((s) => s.id === scheduled.schedule[firstA.id].slotId).start).getTime();
+      const finalTime = new Date(state.competitions[0].slots.find((s) => s.id === scheduled.schedule[final.id].slotId).start).getTime();
+      assert(finalTime - aTime >= 20 * 60000, "勝ち上がり試合の間に移動1枠を確保");
+
+      const league = makeState(4);
+      league.competitions[0].format = "league";
+      league.draws.test = M.createDraw(league, "test", { groupCount: 1 });
+      const leagueMatches = M.buildMatches(league, "test");
+      leagueMatches.forEach((match) => { league.results[match.id] = { winnerSide: "a", scoreA: "2", scoreB: "1" }; });
+      const standings = M.leagueStandings(league, "test", "g1");
+      assert(standings.length === 4 && standings[0].points >= standings[1].points, "リーグ順位を勝点順に集計");
+
+      const result = document.getElementById("results");
+      result.className = failures ? "fail" : "pass";
+      result.textContent = `${failures ? "FAILED" : "ALL PASSED"} (${output.length - failures}/${output.length})\n\n${output.join("\n")}`;
+      document.title = failures ? "TESTS FAILED" : "TESTS PASSED";
+      document.body.dataset.failures = String(failures);
+    })();
+  </script>
+</body>
+</html>

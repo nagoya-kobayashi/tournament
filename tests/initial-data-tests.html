@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>Initial data tests</title>
+<style>body{font:14px system-ui;padding:24px}.pass{color:#17633d}.fail{color:#a32d25}pre{white-space:pre-wrap}</style>
+<h1>Initial data tests</h1>
+<pre id="results">RUNNING</pre>
+<script src="../js/initial-data.js"></script>
+<script src="../js/model.js"></script>
+<script>
+  (function () {
+    const M = window.MatchboardModel;
+    const state = M.createInitialState();
+    const output = []; let failures = 0;
+    function assert(condition, name, detail) {
+      if (condition) output.push(`PASS: ${name}`);
+      else { failures += 1; output.push(`FAIL: ${name}${detail ? ` — ${detail}` : ""}`); }
+    }
+    assert(state.seedVersion === "r8-tournament-2026-06-26", "R8初期データのバージョン");
+    assert(state.classes.length === 25, "25クラスを登録");
+    assert(state.competitions.map((item) => item.name).join(",") === "オセロ,ボッチャ,UNO,コネクト4", "4競技を登録");
+    state.competitions.forEach((competition) => {
+      const teams = M.teamsForCompetition(state, competition.id);
+      const matches = M.buildMatches(state, competition.id);
+      const playable = matches.filter((match) => M.isPlayableMatch(state, match));
+      const numbers = playable.map((match) => match.number).sort((a, b) => a - b);
+      assert(teams.length === 50, `${competition.name}: 50チーム`);
+      assert(playable.length === 50 && numbers.every((number, index) => number === index + 1), `${competition.name}: 3位決定戦を含む試合1〜50`);
+      assert(Object.values(state.schedule).filter((item) => item.competitionId === competition.id).length === 50, `${competition.name}: 全50試合の日程`);
+      const third = matches.find((match) => match.phase === "placement");
+      const final = matches.find((match) => match.phase === "tournament" && match.roundName === "決勝");
+      assert(third && third.number === 49 && final && final.number === 50, `${competition.name}: 3位決定戦49・決勝50`);
+    });
+    const othello = state.competitions.find((item) => item.name === "オセロ");
+    const othelloMatches = M.buildMatches(state, othello.id);
+    const first = othelloMatches.find((match) => match.number === 1);
+    const tenth = othelloMatches.find((match) => match.number === 10);
+    const p1 = M.participantsForMatch(state, first);
+    const p10 = M.participantsForMatch(state, tenth);
+    assert(`${p1.a.team.name}/${p1.b.team.name}` === "3F①/2B①", "オセロ左側の第1試合を原本どおり配置");
+    assert(`${p10.a.team.name}/${p10.b.team.name}` === "3F②/2C②", "オセロ右側の第10試合を原本どおり配置");
+    othelloMatches.filter((match) => match.number && match.number <= 48).forEach((match) => {
+      state.results[match.id] = { winnerSide: "a", scoreA: "1", scoreB: "0" };
+    });
+    const thirdParticipants = M.participantsForMatch(state, othelloMatches.find((match) => match.number === 49));
+    const finalParticipants = M.participantsForMatch(state, othelloMatches.find((match) => match.number === 50));
+    assert(thirdParticipants.a.type === "team" && thirdParticipants.b.type === "team" && finalParticipants.a.type === "team" && finalParticipants.b.type === "team", "準決勝結果を決勝・3位決定戦へ反映");
+    const venueIssues = M.scheduleConflicts(state, state.schedule).filter((issue) => issue.type === "venue");
+    assert(venueIssues.length === 0, "会場・時刻の二重割り当てなし", `${venueIssues.length}件`);
+    const result = document.getElementById("results");
+    result.className = failures ? "fail" : "pass";
+    result.textContent = `${failures ? "FAILED" : "ALL PASSED"} (${output.length - failures}/${output.length})\n\n${output.join("\n")}`;
+    document.body.dataset.failures = String(failures);
+    document.title = failures ? "INITIAL DATA TESTS FAILED" : "INITIAL DATA TESTS PASSED";
+  })();
+</script>
+</html>

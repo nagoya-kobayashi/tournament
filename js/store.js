@@ -1,885 +1,288 @@
-import { formatClock, formatDateTimeStamp, formatDayLabel, formatMatchTimeText } from "./format.js";
+(function (root, factory) {
+  const api = factory(root.MatchboardModel || (typeof require === "function" ? require("./model.js") : null));
+  if (typeof module === "object" && module.exports) module.exports = api;
+  root.MatchboardStore = api.MatchboardStore;
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Model) {
+  "use strict";
 
-const SCHEDULE_DAY_PREF_KEY = "tournament_schedule_day_pref";
+  const STATE_KEY = "indoor-matchboard-state-v2";
+  const CONFIG_KEY = "indoor-matchboard-sync-v1";
 
-const state = {
-  config: null,
-  mode: "missing",
-  readOnly: true,
-  bootstrap: null,
-  pendingSync: new Map(),
-  scheduleDayPreference: loadScheduleDayPreference(),
-  scheduleTabs: {
-    event: new Map(),
-    class: new Map(),
-  },
-  route: { name: "home", params: {} },
-  eventFilter: "",
-  hoverPreview: null,
-  banner: null,
-  modal: {
-    matchId: "",
-    error: "",
-    submitting: false,
-    draft: {
-      winnerSlot: "",
-      memo: "",
-      editorPin: "",
-    },
-    touched: {
-      winnerSlot: false,
-      memo: false,
-      editorPin: false,
-    },
-  },
-  indexes: {
-    eventsById: new Map(),
-    teamsById: new Map(),
-    matchesById: new Map(),
-    matchesByEvent: new Map(),
-    teamIdsByClass: new Map(),
-  },
-};
+  class MatchboardStore {
+    constructor() {
+      this.state = Model.createInitialState();
+      this.serverState = null;
+      this.revision = 0;
+      this.listeners = new Set();
+      this.statusListeners = new Set();
+      this.pending = [];
+      this.queue = Promise.resolve();
+      this.pollTimer = null;
+      this.config = this.readConfig();
+      this.mode = this.config.endpoint ? "remote" : "local";
+      this.status = { mode: this.mode, state: this.mode === "remote" ? "syncing" : "local", message: "" };
+    }
 
-function unique(values) {
-  return [...new Set(values.filter(Boolean))];
-}
+    readConfig() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}");
+        return { endpoint: String(parsed.endpoint || "").trim(), accessKey: String(parsed.accessKey || "") };
+      } catch (_) {
+        return { endpoint: "", accessKey: "" };
+      }
+    }
 
-function getTokyoDateStamp() {
-  return new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-}
+    saveConfig() {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(this.config));
+    }
 
-function loadScheduleDayPreference() {
-  if (typeof localStorage === "undefined") {
-    return { stamp: "", dayNo: "" };
-  }
-  try {
-    const raw = JSON.parse(localStorage.getItem(SCHEDULE_DAY_PREF_KEY) || "{}");
-    const today = getTokyoDateStamp();
-    if (raw && raw.stamp === today && String(raw.dayNo || "").trim()) {
-      return {
-        stamp: today,
-        dayNo: String(raw.dayNo).trim(),
+    readLocal() {
+      try {
+        const raw = localStorage.getItem(STATE_KEY);
+        return raw ? Model.normalizeState(JSON.parse(raw)) : Model.createInitialState();
+      } catch (_) {
+        return Model.createInitialState();
+      }
+    }
+
+    writeLocal(state) {
+      localStorage.setItem(STATE_KEY, JSON.stringify(state));
+    }
+
+    subscribe(listener) {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    }
+
+    onStatus(listener) {
+      this.statusListeners.add(listener);
+      listener(this.status);
+      return () => this.statusListeners.delete(listener);
+    }
+
+    emit() {
+      this.listeners.forEach((listener) => listener(this.state));
+    }
+
+    setStatus(state, message) {
+      this.status = { mode: this.mode, state, message: message || "" };
+      this.statusListeners.forEach((listener) => listener(this.status));
+    }
+
+    async init() {
+      this.state = this.readLocal();
+      this.emit();
+      if (!this.config.endpoint) {
+        this.mode = "local";
+        this.setStatus("local", "この端末に保存しています");
+        return this.state;
+      }
+      this.mode = "remote";
+      this.setStatus("syncing", "共有データを読み込んでいます");
+      try {
+        const payload = await this.remoteLoad();
+        if (payload.data) {
+          this.revision = Number(payload.revision) || 0;
+          this.serverState = Model.normalizeState(payload.data);
+          this.state = Model.deepClone(this.serverState);
+          this.writeLocal(this.state);
+        } else {
+          this.serverState = Model.deepClone(this.state);
+          const created = await this.remoteSave(this.serverState, Number(payload.revision) || 0);
+          this.revision = Number(created.revision) || 1;
+        }
+        this.setStatus("online", "共有中");
+        this.emit();
+        this.startPolling();
+      } catch (error) {
+        this.setStatus("error", error.message || "共有データを読み込めませんでした");
+      }
+      return this.state;
+    }
+
+    async connect(endpoint, accessKey) {
+      const normalized = String(endpoint || "").trim();
+      if (!/^https:\/\/script\.google\.com\//i.test(normalized)) {
+        throw new Error("GASウェブアプリのURL（https://script.google.com/...）を入力してください");
+      }
+      const previous = {
+        config: { ...this.config }, mode: this.mode, serverState: this.serverState,
+        revision: this.revision, state: Model.deepClone(this.state),
       };
-    }
-  } catch (error) {
-    console.warn("[store] failed to load schedule day preference", error);
-  }
-  return {
-    stamp: getTokyoDateStamp(),
-    dayNo: "",
-  };
-}
-
-function persistScheduleDayPreference(dayNo) {
-  const value = {
-    stamp: getTokyoDateStamp(),
-    dayNo: normalizeDayNo(dayNo),
-  };
-  state.scheduleDayPreference = value;
-  if (typeof localStorage === "undefined") {
-    return;
-  }
-  try {
-    localStorage.setItem(SCHEDULE_DAY_PREF_KEY, JSON.stringify(value));
-  } catch (error) {
-    console.warn("[store] failed to persist schedule day preference", error);
-  }
-}
-
-function normalizeWinnerSlot(value) {
-  return value === "top" || value === "bottom" ? value : "";
-}
-
-function getWinnerSlot(match) {
-  const explicit = normalizeWinnerSlot(match.winner_slot);
-  if (explicit) {
-    return explicit;
-  }
-  if (match.winner_team_id && match.winner_team_id === match.resolved_top_team_id) {
-    return "top";
-  }
-  if (match.winner_team_id && match.winner_team_id === match.resolved_bottom_team_id) {
-    return "bottom";
-  }
-  return "";
-}
-
-function createModalDraft(match, preferredWinnerSlot = "") {
-  return {
-    winnerSlot: normalizeWinnerSlot(preferredWinnerSlot) || getWinnerSlot(match),
-    memo: match.correction_note || match.score_text || "",
-    editorPin: "",
-  };
-}
-
-function resetModalDraft(match = null, preferredWinnerSlot = "") {
-  state.modal.draft = match ? createModalDraft(match, preferredWinnerSlot) : createModalDraft({});
-  state.modal.touched = {
-    winnerSlot: !!preferredWinnerSlot,
-    memo: false,
-    editorPin: false,
-  };
-}
-
-function eventMatchesFilter(event, filter) {
-  if (filter === "all") {
-    return true;
-  }
-  return event.weather_mode === "all" || event.weather_mode === filter;
-}
-
-function normalizeEventFilter(filter) {
-  const raw = String(filter || "").trim().toLowerCase();
-  if (raw === "sunny" || raw === "rainy" || raw === "all") {
-    return raw;
-  }
-  return "";
-}
-
-function normalizeDayNo(dayNo) {
-  const raw = String(dayNo || "").trim();
-  return raw || "";
-}
-
-function sortDayNo(a, b) {
-  return Number(a || 99) - Number(b || 99);
-}
-
-function collectScheduleDays(items) {
-  return unique(items.map((item) => normalizeDayNo((item && item.day_no) || "")).filter(Boolean)).sort(sortDayNo);
-}
-
-function resolveScheduleTab(kind, targetId, availableDays) {
-  if (!availableDays.length) {
-    return "";
-  }
-  const globalDay = normalizeDayNo(
-    state.scheduleDayPreference && state.scheduleDayPreference.stamp === getTokyoDateStamp()
-      ? state.scheduleDayPreference.dayNo
-      : ""
-  );
-  if (globalDay && availableDays.includes(globalDay)) {
-    return globalDay;
-  }
-  const bucket = state.scheduleTabs[kind];
-  if (!bucket) {
-    return availableDays[0];
-  }
-  const key = String(targetId || "");
-  const stored = bucket.get(key);
-  if (stored && availableDays.includes(stored)) {
-    return stored;
-  }
-  const fallback = availableDays[0];
-  bucket.set(key, fallback);
-  return fallback;
-}
-
-function sortClassId(a, b) {
-  const [gradeA, letterA] = [Number(a.slice(0, 1)), a.slice(1)];
-  const [gradeB, letterB] = [Number(b.slice(0, 1)), b.slice(1)];
-  if (gradeA !== gradeB) {
-    return gradeA - gradeB;
-  }
-  return letterA.localeCompare(letterB, "ja");
-}
-
-function rebuildIndexes() {
-  const eventsById = new Map();
-  const teamsById = new Map();
-  const matchesById = new Map();
-  const matchesByEvent = new Map();
-  const teamIdsByClass = new Map();
-
-  for (const event of (state.bootstrap && state.bootstrap.events) || []) {
-    eventsById.set(event.event_id, event);
-  }
-  for (const team of (state.bootstrap && state.bootstrap.teams) || []) {
-    teamsById.set(team.team_id, team);
-    if (team.class_id) {
-      if (!teamIdsByClass.has(team.class_id)) {
-        teamIdsByClass.set(team.class_id, []);
+      this.stopPolling();
+      this.config = { endpoint: normalized, accessKey: String(accessKey || "") };
+      this.mode = "remote";
+      this.setStatus("syncing", "接続を確認しています");
+      try {
+        const payload = await this.remoteLoad();
+        if (payload.data) {
+          this.revision = Number(payload.revision) || 0;
+          this.serverState = Model.normalizeState(payload.data);
+          this.state = Model.deepClone(this.serverState);
+        } else {
+          this.serverState = Model.deepClone(this.state);
+          const created = await this.remoteSave(this.serverState, Number(payload.revision) || 0);
+          this.revision = Number(created.revision) || 1;
+        }
+      } catch (error) {
+        this.config = previous.config;
+        this.mode = previous.mode;
+        this.serverState = previous.serverState;
+        this.revision = previous.revision;
+        this.state = previous.state;
+        if (this.mode === "remote") this.startPolling();
+        this.setStatus(this.mode === "remote" ? "online" : "local", this.mode === "remote" ? "元の共有先へ戻しました" : "この端末に保存しています");
+        throw error;
       }
-      teamIdsByClass.get(team.class_id).push(team.team_id);
-    }
-  }
-  for (const match of (state.bootstrap && state.bootstrap.matches) || []) {
-    matchesById.set(match.match_id, match);
-    if (!matchesByEvent.has(match.event_id)) {
-      matchesByEvent.set(match.event_id, []);
-    }
-    matchesByEvent.get(match.event_id).push(match);
-  }
-  for (const matches of matchesByEvent.values()) {
-    matches.sort((a, b) => Number(a.display_order) - Number(b.display_order));
-  }
-
-  state.indexes = { eventsById, teamsById, matchesById, matchesByEvent, teamIdsByClass };
-  syncModalDraft();
-}
-
-function sortBySchedule(a, b) {
-  const dayA = Number(a.day_no || 99);
-  const dayB = Number(b.day_no || 99);
-  if (dayA !== dayB) {
-    return dayA - dayB;
-  }
-  if (a.start_time !== b.start_time) {
-    return a.start_time.localeCompare(b.start_time);
-  }
-  const eventA = state.indexes.eventsById.get(a.event_id);
-  const eventB = state.indexes.eventsById.get(b.event_id);
-  if (eventA && eventB && eventA.display_order !== eventB.display_order) {
-    return Number(eventA.display_order) - Number(eventB.display_order);
-  }
-  return Number(a.display_order) - Number(b.display_order);
-}
-
-function slotLabel(slotType, slotRef) {
-  if (slotType === "team") {
-    const team = state.indexes.teamsById.get(slotRef);
-    return (team && team.display_name) || slotRef.split(":").pop() || "-";
-  }
-  if (slotType === "winner" || slotType === "loser") {
-    const match = state.indexes.matchesById.get(slotRef);
-    if (!match) {
-      return "未設定";
-    }
-    const label = match.match_label || "自動進出";
-    return `${label}の${slotType === "winner" ? "勝者" : "敗者"}`;
-  }
-  return "BYE";
-}
-
-function resolveTeamName(teamId) {
-  const team = state.indexes.teamsById.get(teamId);
-  return (team && team.display_name) || "";
-}
-
-function getAvailableWinnerChoices(match) {
-  return [
-    {
-      slot: "top",
-      teamId: match.resolved_top_team_id || "",
-      label: (match.resolved_top_team_id && resolveTeamName(match.resolved_top_team_id)) || slotLabel(match.slot_top_type, match.slot_top_ref),
-    },
-    {
-      slot: "bottom",
-      teamId: match.resolved_bottom_team_id || "",
-      label:
-        (match.resolved_bottom_team_id && resolveTeamName(match.resolved_bottom_team_id)) || slotLabel(match.slot_bottom_type, match.slot_bottom_ref),
-    },
-  ].filter((choice) => choice.label && choice.label !== "BYE");
-}
-
-function syncModalDraft() {
-  if (!state.modal.matchId) {
-    return;
-  }
-  const match = state.indexes.matchesById.get(state.modal.matchId);
-  if (!match) {
-    state.modal.matchId = "";
-    resetModalDraft();
-    return;
-  }
-
-  const validWinnerSlots = new Set(getAvailableWinnerChoices(match).map((item) => item.slot));
-  if (!state.modal.touched.winnerSlot) {
-    state.modal.draft.winnerSlot = getWinnerSlot(match);
-  } else if (state.modal.draft.winnerSlot && !validWinnerSlots.has(state.modal.draft.winnerSlot)) {
-    state.modal.draft.winnerSlot = "";
-    state.modal.touched.winnerSlot = false;
-  }
-
-  if (!state.modal.touched.memo) {
-    state.modal.draft.memo = match.correction_note || match.score_text || "";
-  }
-  if (!state.modal.touched.editorPin) {
-    state.modal.draft.editorPin = "";
-  }
-}
-
-function resolveCandidateTeams(slotType, slotRef, seen = new Set()) {
-  const cacheKey = `${slotType}:${slotRef}`;
-  if (seen.has(cacheKey)) {
-    return [];
-  }
-
-  if (slotType === "team") {
-    return slotRef ? [slotRef] : [];
-  }
-  if (slotType === "bye") {
-    return [];
-  }
-
-  const match = state.indexes.matchesById.get(slotRef);
-  if (!match) {
-    return [];
-  }
-  if (slotType === "winner" && match.winner_team_id) {
-    return [match.winner_team_id];
-  }
-  if (slotType === "loser" && match.loser_team_id) {
-    return [match.loser_team_id];
-  }
-
-  const nextSeen = new Set(seen);
-  nextSeen.add(cacheKey);
-  return unique([
-    ...resolveCandidateTeams(match.slot_top_type, match.slot_top_ref, nextSeen),
-    ...resolveCandidateTeams(match.slot_bottom_type, match.slot_bottom_ref, nextSeen),
-  ]);
-}
-
-function classMatchesTeamIds(classId, teamIds) {
-  const classTeamIds = new Set(state.indexes.teamIdsByClass.get(classId) || []);
-  return teamIds.some((teamId) => classTeamIds.has(teamId));
-}
-
-function toBoolean(value, fallback = false) {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (value == null || value === "") {
-    return fallback;
-  }
-  const raw = String(value).trim().toLowerCase();
-  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function cloneMatch(match) {
-  return { ...match };
-}
-
-function buildPreviewedEventMatches(eventId, matches) {
-  const preview = state.hoverPreview;
-  if (!preview || preview.eventId !== eventId) {
-    return matches;
-  }
-  const normalizedWinnerSlot = normalizeWinnerSlot(preview.winnerSlot);
-  if (!normalizedWinnerSlot) {
-    return matches;
-  }
-  const eventMatches = matches.map(cloneMatch);
-  const targetMatch = eventMatches.find((match) => match.match_id === preview.matchId);
-  if (!targetMatch) {
-    return matches;
-  }
-  targetMatch.winner_slot = normalizedWinnerSlot;
-  recalculateEventMatches(eventMatches);
-  return eventMatches;
-}
-
-function buildMatchesById(matches) {
-  return Object.fromEntries(matches.map((match) => [match.match_id, match]));
-}
-
-function resolveSlot(matchesById, slotType, slotRef) {
-  if (slotType === "team") {
-    return slotRef;
-  }
-  if (slotType === "bye") {
-    return "";
-  }
-  const upstream = matchesById[slotRef];
-  if (!upstream) {
-    return "";
-  }
-  return slotType === "winner" ? upstream.winner_team_id : upstream.loser_team_id;
-}
-
-function recalculateEventMatches(matches) {
-  matches.sort((a, b) => Number(a.display_order) - Number(b.display_order));
-  const matchesById = buildMatchesById(matches);
-
-  for (const match of matches) {
-    match.resolved_top_team_id = resolveSlot(matchesById, match.slot_top_type, match.slot_top_ref);
-    match.resolved_bottom_team_id = resolveSlot(matchesById, match.slot_bottom_type, match.slot_bottom_ref);
-
-    const topTeam = match.resolved_top_team_id;
-    const bottomTeam = match.resolved_bottom_team_id;
-    const topIsBye = match.slot_top_type === "bye";
-    const bottomIsBye = match.slot_bottom_type === "bye";
-    let winnerSlot = getWinnerSlot(match);
-
-    if (match.winner_team_id && !winnerSlot && match.winner_team_id !== topTeam && match.winner_team_id !== bottomTeam) {
-      match.winner_team_id = "";
-      match.loser_team_id = "";
-      match.score_text = "";
-      match.correction_note = "";
-      match.updated_at = "";
-      match.updated_by_session = "";
+      this.saveConfig();
+      this.writeLocal(this.state);
+      this.setStatus("online", "共有中");
+      this.emit();
+      this.startPolling();
     }
 
-    if (!winnerSlot) {
-      if (topTeam && bottomIsBye) {
-        winnerSlot = "top";
-        match.winner_team_id = topTeam;
-        match.loser_team_id = "";
-      } else if (bottomTeam && topIsBye) {
-        winnerSlot = "bottom";
-        match.winner_team_id = bottomTeam;
-        match.loser_team_id = "";
+    disconnect() {
+      this.stopPolling();
+      this.config = { endpoint: "", accessKey: "" };
+      this.saveConfig();
+      this.mode = "local";
+      this.serverState = null;
+      this.revision = 0;
+      this.pending = [];
+      this.writeLocal(this.state);
+      this.setStatus("local", "この端末に保存しています");
+    }
+
+    async mutate(mutator, label) {
+      if (typeof mutator !== "function") return;
+      mutator(this.state);
+      this.state.updatedAt = new Date().toISOString();
+      Model.pruneOrphans(this.state);
+      this.state = Model.normalizeState(this.state);
+      this.writeLocal(this.state);
+      this.emit();
+
+      if (this.mode !== "remote") {
+        this.setStatus("local", "この端末に保存しました");
+        return;
+      }
+
+      const item = { id: Model.uid("mutation"), mutator, label: label || "変更" };
+      this.pending.push(item);
+      this.setStatus("syncing", `${item.label}を共有しています`);
+      this.enqueueMutation(item);
+      return this.queue;
+    }
+
+    enqueueMutation(item) {
+      this.queue = this.queue.then(() => this.syncMutation(item)).catch((error) => {
+        this.setStatus("error", error.message || "共有に失敗しました。再試行します");
+        if (!item.retryTimer) {
+          item.retryTimer = setTimeout(() => {
+            item.retryTimer = null;
+            if (this.mode === "remote" && this.pending.some((pending) => pending.id === item.id)) this.enqueueMutation(item);
+          }, 3000);
+        }
+      });
+    }
+
+    async syncMutation(item) {
+      const itemIndex = this.pending.findIndex((pending) => pending.id === item.id);
+      if (itemIndex < 0) return;
+      const batch = this.pending.slice(0, itemIndex + 1);
+      let base = Model.deepClone(this.serverState || this.state);
+      let revision = this.revision;
+      let response;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const candidate = Model.deepClone(base);
+        batch.forEach((pending) => pending.mutator(candidate));
+        candidate.updatedAt = new Date().toISOString();
+        Model.pruneOrphans(candidate);
+        try {
+          response = await this.remoteSave(Model.normalizeState(candidate), revision);
+          this.revision = Number(response.revision) || revision + 1;
+          this.serverState = response.data ? Model.normalizeState(response.data) : Model.normalizeState(candidate);
+          break;
+        } catch (error) {
+          if (!error.conflict || !error.payload || !error.payload.data) throw error;
+          base = Model.normalizeState(error.payload.data);
+          revision = Number(error.payload.revision) || revision;
+        }
+      }
+      if (!response) throw new Error("同時編集との統合に失敗しました。もう一度操作してください");
+      const completedIds = new Set(batch.map((pending) => pending.id));
+      batch.forEach((pending) => { if (pending.retryTimer) clearTimeout(pending.retryTimer); });
+      this.pending = this.pending.filter((pending) => !completedIds.has(pending.id));
+      const rebuilt = Model.deepClone(this.serverState);
+      this.pending.forEach((pending) => pending.mutator(rebuilt));
+      this.state = Model.normalizeState(rebuilt);
+      this.writeLocal(this.state);
+      this.emit();
+      this.setStatus("online", "共有済み");
+    }
+
+    endpointUrl(action) {
+      const url = new URL(this.config.endpoint);
+      url.searchParams.set("action", action);
+      url.searchParams.set("t", String(Date.now()));
+      if (this.config.accessKey) url.searchParams.set("accessKey", this.config.accessKey);
+      return url.toString();
+    }
+
+    async remoteLoad() {
+      const response = await fetch(this.endpointUrl("load"), { method: "GET" });
+      if (!response.ok) throw new Error(`共有サーバーの応答エラー (${response.status})`);
+      const payload = await response.json();
+      if (!payload.ok) throw new Error(payload.error || "共有データを読み込めませんでした");
+      return payload;
+    }
+
+    async remoteSave(data, baseRevision) {
+      const params = new URLSearchParams();
+      params.set("action", "save");
+      params.set("baseRevision", String(baseRevision || 0));
+      params.set("data", JSON.stringify(data));
+      if (this.config.accessKey) params.set("accessKey", this.config.accessKey);
+      const response = await fetch(this.config.endpoint, { method: "POST", body: params });
+      if (!response.ok) throw new Error(`共有サーバーの応答エラー (${response.status})`);
+      const payload = await response.json();
+      if (!payload.ok) {
+        const error = new Error(payload.error || "共有データを保存できませんでした");
+        error.conflict = payload.code === "REVISION_CONFLICT";
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    }
+
+    startPolling() {
+      this.stopPolling();
+      this.pollTimer = setInterval(() => this.poll(), 3000);
+    }
+
+    stopPolling() {
+      if (this.pollTimer) clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+
+    async poll() {
+      if (this.mode !== "remote" || this.pending.length) return;
+      try {
+        const payload = await this.remoteLoad();
+        const revision = Number(payload.revision) || 0;
+        if (payload.data && revision > this.revision) {
+          this.revision = revision;
+          this.serverState = Model.normalizeState(payload.data);
+          this.state = Model.deepClone(this.serverState);
+          this.writeLocal(this.state);
+          this.emit();
+        }
+        this.setStatus("online", "共有中");
+      } catch (error) {
+        this.setStatus("error", error.message || "再接続を待っています");
       }
     }
-
-    match.winner_slot = winnerSlot;
-
-    if (winnerSlot === "top") {
-      match.winner_team_id = topTeam;
-      match.loser_team_id = bottomTeam;
-    } else if (winnerSlot === "bottom") {
-      match.winner_team_id = bottomTeam;
-      match.loser_team_id = topTeam;
-    } else {
-      match.winner_team_id = "";
-      match.loser_team_id = "";
-    }
-
-    if (winnerSlot) {
-      if (match.winner_team_id === topTeam) {
-        match.loser_team_id = bottomTeam;
-      } else if (match.winner_team_id === bottomTeam) {
-        match.loser_team_id = topTeam;
-      }
-      match.status = match.correction_note ? "corrected" : "completed";
-    } else if (topTeam && bottomTeam) {
-      match.status = "ready";
-    } else {
-      match.status = "scheduled";
-    }
-  }
-}
-
-function winnerLabelFromMatch(match, topLabel, bottomLabel) {
-  const winnerSlot = getWinnerSlot(match);
-  if (winnerSlot === "top") {
-    return topLabel;
-  }
-  if (winnerSlot === "bottom") {
-    return bottomLabel;
-  }
-  return "";
-}
-
-export function setConfig(config) {
-  state.config = config;
-}
-
-export function setMode(mode, readOnly = true) {
-  state.mode = mode;
-  state.readOnly = readOnly;
-}
-
-export function setBootstrap(payload) {
-  state.bootstrap = payload;
-  rebuildIndexes();
-}
-
-export function mergeUpdatedMatches(updatedMatches, meta = {}) {
-  if (!state.bootstrap) {
-    return;
-  }
-  const replaceMap = new Map(updatedMatches.map((item) => [item.match_id, item]));
-  state.bootstrap.matches = state.bootstrap.matches.map((match) => replaceMap.get(match.match_id) || match);
-  if (meta.dataVersion) {
-    state.bootstrap.dataVersion = meta.dataVersion;
-  }
-  if (meta.currentWeatherMode) {
-    state.bootstrap.currentWeatherMode = meta.currentWeatherMode;
-  }
-  if (meta.generatedAt) {
-    state.bootstrap.generatedAt = meta.generatedAt;
-  }
-  rebuildIndexes();
-}
-
-export function applyOptimisticResult({ matchId, winnerSlot, scoreText, correctionNote, sessionId, clearResult = false }) {
-  if (!state.bootstrap) {
-    return false;
   }
 
-  const eventMatches = state.bootstrap.matches
-    .filter((match) => match.match_id === matchId || match.event_id === (state.indexes.matchesById.get(matchId) || {}).event_id)
-    .map(cloneMatch);
-  const targetMatch = eventMatches.find((match) => match.match_id === matchId);
-  if (!targetMatch) {
-    return false;
-  }
-  if (clearResult) {
-    targetMatch.winner_slot = "";
-    targetMatch.winner_team_id = "";
-    targetMatch.loser_team_id = "";
-    targetMatch.score_text = "";
-    targetMatch.correction_note = "";
-    targetMatch.updated_at = nowIso();
-    targetMatch.updated_by_session = sessionId || "";
-
-    recalculateEventMatches(eventMatches);
-    state.pendingSync.set(matchId, (state.pendingSync.get(matchId) || 0) + 1);
-    mergeUpdatedMatches(eventMatches);
-    return true;
-  }
-  const normalizedWinnerSlot = normalizeWinnerSlot(winnerSlot);
-  if (!normalizedWinnerSlot) {
-    return false;
-  }
-
-  const hadWinner = !!getWinnerSlot(targetMatch);
-  targetMatch.winner_slot = normalizedWinnerSlot;
-  targetMatch.score_text = scoreText || "";
-  targetMatch.correction_note = hadWinner ? (correctionNote || "corrected") : (correctionNote || "");
-  targetMatch.updated_at = nowIso();
-  targetMatch.updated_by_session = sessionId || "";
-
-  recalculateEventMatches(eventMatches);
-  state.pendingSync.set(matchId, (state.pendingSync.get(matchId) || 0) + 1);
-  mergeUpdatedMatches(eventMatches);
-  return true;
-}
-
-export function clearAllPendingSync() {
-  state.pendingSync.clear();
-}
-
-export function hasPendingSync() {
-  return state.pendingSync.size > 0;
-}
-
-export function isEditorPinRequired() {
-  return toBoolean(state.config && state.config.REQUIRE_EDITOR_PIN, true);
-}
-
-export function setRoute(route) {
-  state.route = route;
-}
-
-export function setHoverPreview(eventId, matchId, winnerSlot) {
-  const normalizedWinnerSlot = normalizeWinnerSlot(winnerSlot);
-  if (!eventId || !matchId || !normalizedWinnerSlot) {
-    state.hoverPreview = null;
-    return;
-  }
-  const nextPreview = {
-    eventId: String(eventId),
-    matchId: String(matchId),
-    winnerSlot: normalizedWinnerSlot,
-  };
-  if (
-    state.hoverPreview &&
-    state.hoverPreview.eventId === nextPreview.eventId &&
-    state.hoverPreview.matchId === nextPreview.matchId &&
-    state.hoverPreview.winnerSlot === nextPreview.winnerSlot
-  ) {
-    return;
-  }
-  state.hoverPreview = nextPreview;
-}
-
-export function clearHoverPreview() {
-  state.hoverPreview = null;
-}
-
-export function setBanner(message, type = "warn", options = {}) {
-  const requestedDuration = Number(options.durationMs);
-  const durationMs = Number.isFinite(requestedDuration)
-    ? requestedDuration
-    : type === "warn"
-      ? 5200
-      : 2600;
-  state.banner = { message, type, durationMs };
-}
-
-export function clearBanner() {
-  state.banner = null;
-}
-
-export function setEventFilter(filter) {
-  state.eventFilter = normalizeEventFilter(filter);
-}
-
-export function setScheduleTab(kind, targetId, dayNo) {
-  const bucket = state.scheduleTabs[kind];
-  const normalizedDay = normalizeDayNo(dayNo);
-  if (!bucket || !normalizedDay) {
-    return;
-  }
-  bucket.set(String(targetId || ""), normalizedDay);
-  persistScheduleDayPreference(normalizedDay);
-}
-
-export function openModal(matchId, options = {}) {
-  state.modal.matchId = matchId;
-  state.modal.error = "";
-  state.modal.submitting = false;
-  const match = state.indexes.matchesById.get(matchId);
-  resetModalDraft(match || null, String(options.preferredWinnerSlot || "").trim());
-}
-
-export function closeModal() {
-  state.modal.matchId = "";
-  state.modal.error = "";
-  state.modal.submitting = false;
-  resetModalDraft();
-}
-
-export function setModalError(message) {
-  state.modal.error = message;
-}
-
-export function setModalSubmitting(value) {
-  state.modal.submitting = value;
-}
-
-export function updateModalDraft(field, value) {
-  if (!state.modal.matchId) {
-    return;
-  }
-  if (!(field in state.modal.draft)) {
-    return;
-  }
-  state.modal.draft[field] = field === "winnerSlot" ? normalizeWinnerSlot(value) : String(value || "");
-  state.modal.touched[field] = true;
-  state.modal.error = "";
-}
-
-export function getState() {
-  return state;
-}
-
-export function getCurrentWeatherMode() {
-  return (state.bootstrap && state.bootstrap.currentWeatherMode) || "sunny";
-}
-
-export function getVisibleEvents() {
-  const currentWeatherMode = getCurrentWeatherMode();
-  const activeFilter = normalizeEventFilter(state.eventFilter) || currentWeatherMode || "all";
-  return [...state.indexes.eventsById.values()]
-    .filter((event) => eventMatchesFilter(event, activeFilter))
-    .sort((a, b) => Number(a.display_order) - Number(b.display_order));
-}
-
-export function getEventFilter() {
-  return state.eventFilter;
-}
-
-export function getClassIds() {
-  const configured = ((state.bootstrap && state.bootstrap.classNames) || []).map((item) => String(item || "").trim()).filter(Boolean);
-  return unique([...state.indexes.teamIdsByClass.keys(), ...configured]).sort(sortClassId);
-}
-
-export function getEventById(eventId) {
-  return state.indexes.eventsById.get(eventId) || null;
-}
-
-export function getMatchesForEvent(eventId) {
-  return [...(state.indexes.matchesByEvent.get(eventId) || [])];
-}
-
-export function getMatchView(match, selectedClassId = "") {
-  const topResolvedName = resolveTeamName(match.resolved_top_team_id);
-  const bottomResolvedName = resolveTeamName(match.resolved_bottom_team_id);
-  const topLabel = topResolvedName || slotLabel(match.slot_top_type, match.slot_top_ref);
-  const bottomLabel = bottomResolvedName || slotLabel(match.slot_bottom_type, match.slot_bottom_ref);
-  const topTeam = state.indexes.teamsById.get(match.resolved_top_team_id);
-  const bottomTeam = state.indexes.teamsById.get(match.resolved_bottom_team_id);
-  const topClass = (topTeam && topTeam.class_id) || "";
-  const bottomClass = (bottomTeam && bottomTeam.class_id) || "";
-  const winnerSlot = getWinnerSlot(match);
-  const winnerTeamId = match.winner_team_id;
-  const loserTeamId = match.loser_team_id;
-  const winnerLabel = winnerLabelFromMatch(match, topLabel, bottomLabel);
-  const resultLabel = winnerLabel ? `${winnerLabel}勝` : "";
-  const isPendingSync = state.pendingSync.has(match.match_id);
-  const selectedClassOutcome =
-    selectedClassId && winnerTeamId
-      ? topClass === selectedClassId && winnerTeamId === match.resolved_top_team_id
-        ? "win"
-        : bottomClass === selectedClassId && winnerTeamId === match.resolved_bottom_team_id
-          ? "win"
-          : topClass === selectedClassId || bottomClass === selectedClassId
-            ? "lose"
-            : ""
-      : "";
-  const hasWinnerChoices = getAvailableWinnerChoices(match).length > 0;
-  const canSubmit =
-    !state.readOnly &&
-    hasWinnerChoices &&
-    (match.status === "scheduled" || match.status === "ready" || match.status === "completed" || match.status === "corrected");
-
-  return {
-    match,
-    topLabel,
-    bottomLabel,
-    topResolvedName,
-    bottomResolvedName,
-    topTeamId: match.resolved_top_team_id,
-    bottomTeamId: match.resolved_bottom_team_id,
-    topClass,
-    bottomClass,
-    winnerSlot,
-    winnerTeamId,
-    loserTeamId,
-    winnerLabel,
-    resultLabel,
-    timeText: formatMatchTimeText(match, state.config || {}),
-    isTopWinner: winnerSlot === "top",
-    isBottomWinner: winnerSlot === "bottom",
-    isTopLoser: winnerSlot === "bottom",
-    isBottomLoser: winnerSlot === "top",
-    topHighlighted: selectedClassId && topClass === selectedClassId,
-    bottomHighlighted: selectedClassId && bottomClass === selectedClassId,
-    selectedClassOutcome,
-    isPendingSync,
-    canSubmit,
-    progressLabel: isPendingSync ? "送信中" : resultLabel ? "実施済み" : canSubmit ? "未実施" : "未確定",
-    statusText: resultLabel || (canSubmit ? "入力待ち" : "未確定"),
-    formattedDay: formatDayLabel(match.day_no, state.config || {}),
-    formattedTime: formatClock(match.start_time),
-  };
-}
-
-export function getRouteData() {
-  return state.route;
-}
-
-export function getHomeData() {
-  const activeFilter = normalizeEventFilter(state.eventFilter) || getCurrentWeatherMode() || "all";
-  return {
-    appName: (state.config && state.config.APP_NAME) || "球技大会ライブ",
-    currentWeatherMode: getCurrentWeatherMode(),
-    events: getVisibleEvents(),
-    classIds: getClassIds(),
-    updatedAt: formatDateTimeStamp((state.bootstrap && state.bootstrap.generatedAt) || ""),
-    isReadOnly: state.readOnly,
-    mode: state.mode,
-    eventFilter: activeFilter,
-  };
-}
-
-export function getEventDetail(eventId) {
-  const event = getEventById(eventId);
-  if (!event) {
-    return null;
-  }
-  const baseMatches = getMatchesForEvent(eventId);
-  const matches = buildPreviewedEventMatches(eventId, baseMatches);
-  const scheduledMatches = matches
-    .filter((match) => match.day_no || match.start_time)
-    .sort(sortBySchedule);
-  const scheduleDays = collectScheduleDays(scheduledMatches);
-  const activeScheduleDay = resolveScheduleTab("event", eventId, scheduleDays);
-  return {
-    event,
-    teams: ((state.bootstrap && state.bootstrap.teams) || [])
-      .filter((team) => team.event_id === eventId)
-      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)),
-    matches,
-    baseMatches,
-    scheduledMatches: activeScheduleDay
-      ? scheduledMatches.filter((match) => normalizeDayNo(match.day_no) === activeScheduleDay)
-      : scheduledMatches,
-    scheduleDays,
-    activeScheduleDay,
-    selectedClassId: state.route.name === "class" ? state.route.params.classId || "" : "",
-    isReadOnly: state.readOnly,
-  };
-}
-
-function buildConditionText(match, classId) {
-  const conditions = [];
-  const topCandidates = resolveCandidateTeams(match.slot_top_type, match.slot_top_ref);
-  const bottomCandidates = resolveCandidateTeams(match.slot_bottom_type, match.slot_bottom_ref);
-  if (!match.resolved_top_team_id && classMatchesTeamIds(classId, topCandidates)) {
-    conditions.push(slotLabel(match.slot_top_type, match.slot_top_ref));
-  }
-  if (!match.resolved_bottom_team_id && classMatchesTeamIds(classId, bottomCandidates)) {
-    conditions.push(slotLabel(match.slot_bottom_type, match.slot_bottom_ref));
-  }
-  return conditions.join(" / ");
-}
-
-export function getClassSchedule(classId) {
-  if (!classId) {
-    return null;
-  }
-  const visibleEventIds = new Set(getVisibleEvents().map((event) => event.event_id));
-  const confirmed = [];
-  const conditional = [];
-
-  for (const match of (state.bootstrap && state.bootstrap.matches) || []) {
-    if (!visibleEventIds.has(match.event_id)) {
-      continue;
-    }
-    const topTeam = state.indexes.teamsById.get(match.resolved_top_team_id);
-    const bottomTeam = state.indexes.teamsById.get(match.resolved_bottom_team_id);
-    const isConfirmed = (topTeam && topTeam.class_id === classId) || (bottomTeam && bottomTeam.class_id === classId);
-    if (isConfirmed) {
-      confirmed.push(match);
-      continue;
-    }
-    const topCandidates = resolveCandidateTeams(match.slot_top_type, match.slot_top_ref);
-    const bottomCandidates = resolveCandidateTeams(match.slot_bottom_type, match.slot_bottom_ref);
-    if (classMatchesTeamIds(classId, topCandidates) || classMatchesTeamIds(classId, bottomCandidates)) {
-      conditional.push(match);
-    }
-  }
-
-  confirmed.sort(sortBySchedule);
-  conditional.sort(sortBySchedule);
-
-  const scheduleDays = collectScheduleDays([...confirmed, ...conditional]);
-  const activeScheduleDay = resolveScheduleTab("class", classId, scheduleDays);
-  const filterByDay = (match) => !activeScheduleDay || normalizeDayNo(match.day_no) === activeScheduleDay;
-
-  return {
-    classId,
-    scheduleDays,
-    activeScheduleDay,
-    confirmed: confirmed.filter(filterByDay).map((match) => ({
-      match,
-      event: state.indexes.eventsById.get(match.event_id),
-      view: getMatchView(match, classId),
-      conditionText: "",
-    })),
-    conditional: conditional.filter(filterByDay).map((match) => ({
-      match,
-      event: state.indexes.eventsById.get(match.event_id),
-      view: getMatchView(match, classId),
-      conditionText: buildConditionText(match, classId),
-    })),
-  };
-}
-
-export function getModalMatch() {
-  if (!state.modal.matchId) {
-    return null;
-  }
-  const match = state.indexes.matchesById.get(state.modal.matchId);
-  if (!match) {
-    return null;
-  }
-  const event = state.indexes.eventsById.get(match.event_id);
-  const availableWinnerChoices = getAvailableWinnerChoices(match);
-  return {
-    event,
-    match,
-    view: getMatchView(match),
-    error: state.modal.error,
-    submitting: state.modal.submitting,
-    isReadOnly: state.readOnly,
-    requireEditorPin: isEditorPinRequired(),
-    draft: { ...state.modal.draft },
-    availableWinnerChoices,
-  };
-}
+  return { MatchboardStore };
+});
