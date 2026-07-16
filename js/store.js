@@ -2,11 +2,60 @@
   const api = factory(root.MatchboardModel || (typeof require === "function" ? require("./model.js") : null));
   if (typeof module === "object" && module.exports) module.exports = api;
   root.MatchboardStore = api.MatchboardStore;
+  root.MatchboardStoreUtils = api.MatchboardStoreUtils;
 })(typeof globalThis !== "undefined" ? globalThis : this, function (Model) {
   "use strict";
 
   const STATE_KEY = "indoor-matchboard-state-v2";
   const CONFIG_KEY = "indoor-matchboard-sync-v1";
+  const GAS_QUERY_PARAM = "gas";
+
+  function normalizeGasEndpoint(value) {
+    try {
+      const url = new URL(String(value || "").trim());
+      if (url.origin !== "https://script.google.com" || url.username || url.password || !/\/exec\/?$/i.test(url.pathname)) return "";
+      url.pathname = url.pathname.replace(/\/$/, "");
+      url.hash = "";
+      return url.toString();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function embeddedEndpoint(href) {
+    try {
+      const source = href || (typeof location !== "undefined" ? location.href : "");
+      return normalizeGasEndpoint(new URL(source).searchParams.get(GAS_QUERY_PARAM));
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function distributionUrl(endpoint, href) {
+    const normalized = normalizeGasEndpoint(endpoint);
+    if (!normalized) return "";
+    try {
+      const source = href || (typeof location !== "undefined" ? location.href : "");
+      const url = new URL(source);
+      url.searchParams.set(GAS_QUERY_PARAM, normalized);
+      url.hash = "live";
+      return url.toString();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function removeEmbeddedEndpoint() {
+    if (typeof location === "undefined" || typeof history === "undefined") return;
+    try {
+      const url = new URL(location.href);
+      if (!url.searchParams.has(GAS_QUERY_PARAM)) return;
+      url.searchParams.delete(GAS_QUERY_PARAM);
+      history.replaceState(history.state, "", url.toString());
+    } catch (_) {
+      // URLを書き換えられない環境でも、端末内の共有設定解除は継続する。
+    }
+  }
 
   class MatchboardStore {
     constructor() {
@@ -24,12 +73,18 @@
     }
 
     readConfig() {
+      let saved = { endpoint: "", accessKey: "" };
       try {
         const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}");
-        return { endpoint: String(parsed.endpoint || "").trim(), accessKey: String(parsed.accessKey || "") };
+        saved = { endpoint: normalizeGasEndpoint(parsed.endpoint), accessKey: String(parsed.accessKey || "") };
       } catch (_) {
-        return { endpoint: "", accessKey: "" };
+        // 端末保存が使えない場合も、URLに埋め込まれた接続先は利用する。
       }
+      const fromUrl = embeddedEndpoint();
+      if (!fromUrl) return saved;
+      const config = { endpoint: fromUrl, accessKey: saved.endpoint === fromUrl ? saved.accessKey : "" };
+      try { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); } catch (_) { /* 現在の表示中だけ利用 */ }
+      return config;
     }
 
     saveConfig() {
@@ -101,9 +156,9 @@
     }
 
     async connect(endpoint, accessKey) {
-      const normalized = String(endpoint || "").trim();
-      if (!/^https:\/\/script\.google\.com\//i.test(normalized)) {
-        throw new Error("GASウェブアプリのURL（https://script.google.com/...）を入力してください");
+      const normalized = normalizeGasEndpoint(endpoint);
+      if (!normalized) {
+        throw new Error("GASウェブアプリのURL（https://script.google.com/.../exec）を入力してください");
       }
       const previous = {
         config: { ...this.config }, mode: this.mode, serverState: this.serverState,
@@ -145,6 +200,7 @@
       this.stopPolling();
       this.config = { endpoint: "", accessKey: "" };
       this.saveConfig();
+      removeEmbeddedEndpoint();
       this.mode = "local";
       this.serverState = null;
       this.revision = 0;
@@ -284,5 +340,8 @@
     }
   }
 
-  return { MatchboardStore };
+  return {
+    MatchboardStore,
+    MatchboardStoreUtils: { normalizeGasEndpoint, embeddedEndpoint, distributionUrl },
+  };
 });

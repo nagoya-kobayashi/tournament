@@ -6,6 +6,7 @@
 <pre id="results">RUNNING</pre>
 <iframe id="frame"></iframe>
 <script src="../js/model.js"></script>
+<script src="../js/store.js"></script>
 <script>
   window.addEventListener("unhandledrejection", (event) => {
     const result = document.getElementById("results");
@@ -43,6 +44,13 @@
       else { failures += 1; output.push(`FAIL: ${name}`); }
       document.getElementById("results").textContent = `RUNNING (${output.length})\n\n${output.join("\n")}`;
     }
+    const StoreUtils = window.MatchboardStoreUtils;
+    const gasEndpoint = "https://script.google.com/macros/s/test-deployment-id/exec";
+    const distributed = StoreUtils.distributionUrl(gasEndpoint, "https://example.test/matchboard/index.html?source=school#draw");
+    const distributedUrl = new URL(distributed);
+    assert(StoreUtils.normalizeGasEndpoint(gasEndpoint) === gasEndpoint && StoreUtils.normalizeGasEndpoint("https://example.test/exec") === "", "GASウェブアプリURLだけを受け付ける");
+    assert(distributedUrl.searchParams.get("gas") === gasEndpoint && distributedUrl.searchParams.get("source") === "school" && distributedUrl.hash === "#live", "既存URLへGAS接続先を埋め込んだ配布URLを生成");
+    assert(StoreUtils.embeddedEndpoint(distributed) === gasEndpoint, "配布URLからGAS接続先を復元");
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const frame = document.getElementById("frame");
     frame.src = "../index.html#live";

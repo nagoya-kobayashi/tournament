@@ -2,6 +2,7 @@
   "use strict";
 
   const Model = window.MatchboardModel;
+  const StoreUtils = window.MatchboardStoreUtils;
   const store = new window.MatchboardStore();
   const app = document.getElementById("app");
   const modalRoot = document.getElementById("modal-root");
@@ -161,6 +162,23 @@
     node.textContent = message;
     toastRoot.appendChild(node);
     setTimeout(() => node.remove(), 3400);
+  }
+
+  async function copyText(value) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    const node = document.createElement("textarea");
+    node.value = value;
+    node.setAttribute("readonly", "");
+    node.style.position = "fixed";
+    node.style.opacity = "0";
+    document.body.appendChild(node);
+    node.select();
+    const copied = document.execCommand("copy");
+    node.remove();
+    if (!copied) throw new Error("クリップボードへコピーできませんでした");
   }
 
   function showModal(content, large) {
@@ -876,8 +894,8 @@
 
   function openSyncModal() {
     const cfg = store.config;
-    const body = `<form id="sync-form" class="stack"><div class="field"><label for="event-name-setting">イベント名</label><input id="event-name-setting" name="eventTitle" class="input" required maxlength="50" value="${attr(store.state.event.title)}"></div><div class="field"><label for="gas-endpoint">GASウェブアプリURL</label><input id="gas-endpoint" name="endpoint" class="input" type="url" value="${attr(cfg.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec"><small>空欄のまま保存すると、この端末だけに保存します。</small></div><div class="field"><label for="gas-key">アクセスキー（GAS側で設定した場合のみ）</label><input id="gas-key" name="accessKey" class="input" value="${attr(cfg.accessKey)}" autocomplete="off"></div><div class="info-box">共有時は3秒ごとに更新を確認します。通信はGETと form-urlencoded のPOSTだけを使い、CORSプリフライトを発生させません。</div></form>`;
-    const actions = `${cfg.endpoint ? `<button class="button danger" type="button" data-disconnect>共有を解除</button>` : ""}<button class="button secondary" type="button" data-close-modal>キャンセル</button><button class="button primary" type="submit" form="sync-form">設定を保存</button>`;
+    const body = `<form id="sync-form" class="stack"><div class="field"><label for="event-name-setting">イベント名</label><input id="event-name-setting" name="eventTitle" class="input" required maxlength="50" value="${attr(store.state.event.title)}"></div><div class="field"><label for="gas-endpoint">GASウェブアプリURL</label><input id="gas-endpoint" name="endpoint" class="input" type="url" value="${attr(cfg.endpoint)}" placeholder="https://script.google.com/macros/s/.../exec"><small>空欄のまま保存すると、この端末だけに保存します。</small></div><div class="field"><label for="gas-key">アクセスキー（GAS側で設定した場合のみ）</label><input id="gas-key" name="accessKey" class="input" value="${attr(cfg.accessKey)}" autocomplete="off"></div><div class="info-box">共有時は3秒ごとに更新を確認します。通信はGETと form-urlencoded のPOSTだけを使い、CORSプリフライトを発生させません。<br>配布用URLにはGAS URLだけを埋め込み、アクセスキーは含めません。</div></form>`;
+    const actions = `${cfg.endpoint ? `<button class="button danger" type="button" data-disconnect>共有を解除</button><button class="button secondary" type="button" data-copy-distribution-url>配布用URLをコピー</button>` : ""}<button class="button secondary" type="button" data-close-modal>キャンセル</button><button class="button primary" type="submit" form="sync-form">設定を保存</button>`;
     showModal(modalFrame("共有・イベント設定", store.mode === "remote" ? "Googleスプレッドシートと共有中" : "現在はこの端末に保存しています", body, actions));
   }
 
@@ -1004,6 +1022,17 @@
           if (filter === "all") state.schedule = {};
           else Object.keys(state.schedule).forEach((id) => { if (state.schedule[id].competitionId === filter) delete state.schedule[id]; });
         }, "日程解除");
+      }
+      return;
+    }
+    if (target.matches("[data-copy-distribution-url]")) {
+      const url = StoreUtils.distributionUrl(store.config.endpoint, window.location.href);
+      if (!url) { toast("配布用URLを作成できませんでした", "error"); return; }
+      try {
+        await copyText(url);
+        toast("配布用URLをコピーしました");
+      } catch (_) {
+        window.prompt("次の配布用URLをコピーしてください", url);
       }
       return;
     }

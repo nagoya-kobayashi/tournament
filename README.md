@@ -74,6 +74,19 @@ py -m http.server 8765
 6. 「次のユーザーとして実行」は自分、「アクセスできるユーザー」は全員（匿名アクセス可）を選びます。外部サイトから認証画面を挟まずに単純リクエストで読み書きするため、この公開設定が必要です。
 7. デプロイ後に表示される `/exec` で終わるURLをコピーします。開発テスト用の `/dev` URLは使いません。
 8. Matchboard右上の歯車を押し、「GASウェブアプリURL」へ貼り付けて保存します。
+9. 接続後、もう一度歯車を開いて「配布用URLをコピー」を押し、そのURLを利用者へ配布します。
+
+### GAS接続先を埋め込んだ配布用URL
+
+配布用URLは、MatchboardのURLへ `gas` パラメーターとしてGASウェブアプリURLを埋め込んだものです。例:
+
+```text
+https://example.jp/matchboard/?gas=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2F...%2Fexec#live
+```
+
+利用者がこのURLを開くと、埋め込まれたGAS URLを接続先として端末に保存し、共有データを自動で読み込みます。URLのエンコードは「配布用URLをコピー」ボタンが行うため、手作業は不要です。「共有を解除」すると、端末の接続設定と現在のURL内の `gas` パラメーターをどちらも削除します。
+
+アクセスキーは、閲覧履歴や転送先へ残らないよう配布用URLには含めません。GAS側で `ACCESS_KEY` を設定している場合は、配布先の各端末で歯車を開き、アクセスキーを別途入力してください。
 
 Apps Scriptウェブアプリは `doGet(e)` と `doPost(e)` でリクエストを受け、`ContentService` でJSONを返します。Googleの仕様上、レスポンスは `script.googleusercontent.com` の一時URLへリダイレクトされますが、ブラウザーの `fetch` は通常これを追跡します。参考: [Apps Script Web Apps](https://developers.google.com/apps-script/guides/web)、[Content Service](https://developers.google.com/apps-script/guides/content)
 
@@ -112,7 +125,7 @@ Webサーバー起動中に次をブラウザーで開きます。
 
 - `tests/initial-data-tests.html`: R8のクラス、全チーム、対戦枠、試合番号1～50、全日程（23項目）
 - `tests/model-tests.html`: チーム命名、勝敗伝播、先行結果入力、取消、自動日程、リーグ順位（12項目）
-- `tests/ui-smoke-tests.html`: 主要画面、原本PDF準拠の対戦表、赤い勝ち上がり経路、シード・敗退・取消表示、結果モーダル、対戦表上の組み合わせ編集、表形式の日程調整、クラス別・競技別予定、データロック（37項目）
+- `tests/ui-smoke-tests.html`: 主要画面、原本PDF準拠の対戦表、赤い勝ち上がり経路、シード・敗退・取消表示、結果モーダル、対戦表上の組み合わせ編集、表形式の日程調整、クラス別・競技別予定、データロック、GAS配布用URL（40項目）
 
 どちらもページ上部が `ALL PASSED` になれば成功です。
 
