@@ -5,10 +5,11 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (INITIAL_DATA) {
   "use strict";
 
-  const SCHEMA_VERSION = 1;
+  const SCHEMA_VERSION = 2;
   const COLORS = ["#2f6f59", "#db754b", "#5379bd", "#8c5caf", "#b99a35", "#3b8d97"];
   const FORMAT_LABELS = { league: "リーグ", tournament: "トーナメント", hybrid: "リーグ＋トーナメント" };
   const TEAM_SUFFIXES = ["①", "②", "③"];
+  const CONSOLATION_LABELS = Array.from("あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん");
 
   function uid(prefix) {
     const random = Math.random().toString(36).slice(2, 8);
@@ -136,6 +137,7 @@
         tournament: {
           size: 64,
           thirdPlace: true,
+          consolation: true,
           slots: [
             ...expandInitialHalf(competition.id, classes, source.left),
             ...expandInitialHalf(competition.id, classes, source.right),
@@ -178,6 +180,7 @@
 
   function normalizeState(input) {
     const state = input && typeof input === "object" ? deepClone(input) : createInitialState();
+    const previousSchemaVersion = Number(state.schemaVersion) || 1;
     state.schemaVersion = SCHEMA_VERSION;
     state.event = state.event || { title: "インドア選手権" };
     state.event.title = String(state.event.title || "インドア選手権");
@@ -199,6 +202,26 @@
         state.entries[competition.id][classInfo.id] = Math.max(0, Math.min(3, count));
       });
     });
+    if (previousSchemaVersion < 2 && INITIAL_DATA && state.seedVersion === INITIAL_DATA.seedVersion) {
+      state.competitions.forEach((competition, competitionIndex) => {
+        const configured = INITIAL_DATA.competitions[competitionIndex];
+        const draw = state.draws[competition.id];
+        if (!configured || !draw || !draw.tournament) return;
+        draw.tournament.consolation = true;
+        const byNumber = new Map(buildMatches(state, competition.id).filter((match) => match.number).map((match) => [match.number, match]));
+        configured.days.forEach((day, dayIndex) => {
+          day.rows.forEach(([time, numbers]) => {
+            const slotId = `${competition.id}_day${dayIndex + 1}_${time.replace(":", "")}`;
+            numbers.forEach((number, venueIndex) => {
+              if (typeof number !== "string") return;
+              const match = byNumber.get(number);
+              const venue = competition.venues[venueIndex];
+              if (match && venue && !state.schedule[match.id]) state.schedule[match.id] = { competitionId: competition.id, slotId, venueId: venue.id };
+            });
+          });
+        });
+      });
+    }
     return state;
   }
 
@@ -302,7 +325,7 @@
       } else {
         slots = balanceBracketSources(teams.map((team) => directTeamSource(team.id)), size);
       }
-      draw.tournament = { size, slots };
+      draw.tournament = { size, slots, consolation: false };
     }
     return draw;
   }
@@ -311,9 +334,11 @@
     const nextSize = nextPowerOfTwo(size);
     const current = draw.tournament && Array.isArray(draw.tournament.slots) ? draw.tournament.slots : [];
     const thirdPlace = Boolean(draw.tournament && draw.tournament.thirdPlace);
+    const consolation = Boolean(draw.tournament && draw.tournament.consolation);
     draw.tournament = {
       size: nextSize,
       thirdPlace,
+      consolation,
       slots: current.slice(0, nextSize).concat(Array.from({ length: Math.max(0, nextSize - current.length) }, () => ({ type: "empty" }))),
     };
   }
@@ -425,8 +450,41 @@
           if (finalMatch) finalMatch.number = nextNumber++;
         }
       }
+      if (draw.tournament.consolation) {
+        const tournamentById = new Map(tournamentMatches.map((match) => [match.id, match]));
+        const sourceMatches = tournamentMatches.filter((match) => {
+          if (!match.number) return false;
+          if (match.round === 0) return true;
+          return [match.sourceA, match.sourceB].some((source) => {
+            if (!source || source.type !== "matchWinner") return false;
+            const sourceMatch = tournamentById.get(source.matchId);
+            return sourceMatch && !sourceMatch.number;
+          });
+        }).sort((a, b) => Number(a.number) - Number(b.number));
+        for (let index = 0; index + 1 < sourceMatches.length; index += 2) {
+          const consolationIndex = index / 2;
+          matches.push({
+            id: `${competitionId}__C__${consolationIndex}`,
+            competitionId,
+            phase: "consolation",
+            round: roundCount,
+            roundCount,
+            roundName: "コンソレーション",
+            index: consolationIndex,
+            number: CONSOLATION_LABELS[consolationIndex] || `C${consolationIndex + 1}`,
+            sourceA: { type: "matchLoser", matchId: sourceMatches[index].id },
+            sourceB: { type: "matchLoser", matchId: sourceMatches[index + 1].id },
+          });
+        }
+      }
     }
     return matches;
+  }
+
+  function matchNumberOrder(number) {
+    if (typeof number === "number" && Number.isFinite(number)) return number;
+    const consolationIndex = CONSOLATION_LABELS.indexOf(String(number || ""));
+    return consolationIndex >= 0 ? 1000 + consolationIndex : 2000;
   }
 
   function matchMap(state, competitionId) {
@@ -532,6 +590,8 @@
     const safeSource = source || { type: "empty" };
     if (safeSource.type === "team") return new Set([safeSource.teamId]);
     if (safeSource.type === "leagueRank") {
+      const resolved = resolveSource(state, competitionId, safeSource);
+      if (resolved.type === "team") return new Set([resolved.team.id]);
       const draw = state.draws[competitionId];
       const group = draw && draw.league && draw.league.groups.find((item) => item.id === safeSource.groupId);
       if (!group) return new Set();
@@ -544,6 +604,17 @@
       seen.add(safeSource.matchId);
       const match = matchMap(state, competitionId).get(safeSource.matchId);
       if (!match) return new Set();
+      const result = state.results[match.id];
+      if (result && ["a", "b"].includes(result.winnerSide)) {
+        const selectedSide = safeSource.type === "matchWinner"
+          ? result.winnerSide
+          : (result.winnerSide === "a" ? "b" : "a");
+        return possibleTeamIds(state, competitionId, selectedSide === "a" ? match.sourceA : match.sourceB, seen);
+      }
+      if (match.sourceA.type === "bye" || match.sourceB.type === "bye") {
+        if (safeSource.type === "matchLoser") return new Set();
+        return possibleTeamIds(state, competitionId, match.sourceA.type === "bye" ? match.sourceB : match.sourceA, seen);
+      }
       const a = possibleTeamIds(state, competitionId, match.sourceA, seen);
       const b = possibleTeamIds(state, competitionId, match.sourceB, seen);
       return new Set([...a, ...b]);
@@ -552,9 +623,15 @@
   }
 
   function possibleTeamsForMatch(state, match) {
+    const participants = participantsForMatch(state, match);
+    const possibleForSide = (participant, source) => {
+      if (participant.type === "team") return new Set([participant.team.id]);
+      if (participant.type === "bye") return new Set();
+      return possibleTeamIds(state, match.competitionId, source);
+    };
     return new Set([
-      ...possibleTeamIds(state, match.competitionId, match.sourceA),
-      ...possibleTeamIds(state, match.competitionId, match.sourceB),
+      ...possibleForSide(participants.a, match.sourceA),
+      ...possibleForSide(participants.b, match.sourceB),
     ]);
   }
 
@@ -615,7 +692,7 @@
       .sort((a, b) => {
         const phaseA = a.phase === "league" ? 0 : 1;
         const phaseB = b.phase === "league" ? 0 : 1;
-        return phaseA - phaseB || a.round - b.round || a.number - b.number;
+        return phaseA - phaseB || a.round - b.round || matchNumberOrder(a.number) - matchNumberOrder(b.number);
       });
     const unassigned = [];
 
@@ -647,9 +724,9 @@
     return matches.sort((a, b) => {
       const completeA = state.results[a.id] ? 0 : 1;
       const completeB = state.results[b.id] ? 0 : 1;
-      const phaseA = a.phase === "tournament" || a.phase === "placement" ? 1 : 0;
-      const phaseB = b.phase === "tournament" || b.phase === "placement" ? 1 : 0;
-      return phaseB - phaseA || b.round - a.round || completeB - completeA || b.number - a.number;
+      const phaseA = a.phase === "tournament" || a.phase === "placement" || a.phase === "consolation" ? 1 : 0;
+      const phaseB = b.phase === "tournament" || b.phase === "placement" || b.phase === "consolation" ? 1 : 0;
+      return phaseB - phaseA || b.round - a.round || completeB - completeA || matchNumberOrder(b.number) - matchNumberOrder(a.number);
     })[0] || null;
   }
 
@@ -676,9 +753,9 @@
   }
 
   return {
-    SCHEMA_VERSION, COLORS, FORMAT_LABELS, TEAM_SUFFIXES, uid, deepClone, localDateTime, makeSlots,
+    SCHEMA_VERSION, COLORS, FORMAT_LABELS, TEAM_SUFFIXES, CONSOLATION_LABELS, uid, deepClone, localDateTime, makeSlots,
     createInitialState, normalizeState, createCompetition, teamsForCompetition, allTeams,
-    nextPowerOfTwo, createDraw, resizeTournament, resizeLeague, sourceKey,
+    nextPowerOfTwo, createDraw, resizeTournament, resizeLeague, sourceKey, matchNumberOrder,
     buildMatches, resolveSource, participantsForMatch, winnerOfMatch, participantLabel,
     leagueStandings, possibleTeamIds, possibleTeamsForMatch, scheduleConflicts,
     isPlayableMatch, autoSchedule, findLatestMatchForTeam, competitionProgress, pruneOrphans,

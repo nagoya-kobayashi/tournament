@@ -490,11 +490,33 @@
     return `${html}</article>`;
   }
 
+  function renderConsolationMatch(state, match, position, options) {
+    const settings = options || {};
+    const participants = Model.participantsForMatch(state, match);
+    const result = state.results[match.id];
+    const sourceLabel = (source) => {
+      const sourceMatch = source && source.matchId ? matchById(state, source.matchId) : null;
+      return sourceMatch && sourceMatch.number ? `${sourceMatch.number}の敗者` : "試合敗者";
+    };
+    const numberNode = settings.editable || settings.readOnly
+      ? `<span class="consolation-number" title="試合 ${esc(match.number)}">${esc(match.number)}</span>`
+      : `<button class="consolation-number" type="button" data-result-match="${attr(match.id)}" title="コンソレーション ${attr(match.number)} の結果入力">${esc(match.number)}</button>`;
+    const sourceNode = (side) => {
+      const participant = participants[side];
+      const isWinner = result && result.winnerSide === side;
+      const isLoser = result && result.winnerSide !== side;
+      const title = participant.type === "team" ? `${sourceLabel(side === "a" ? match.sourceA : match.sourceB)}：${participant.team.name}` : sourceLabel(side === "a" ? match.sourceA : match.sourceB);
+      return `<span class="consolation-source source-${side} ${isWinner ? "winner" : ""} ${isLoser ? "lost" : ""}" title="${attr(title)}"><span>${esc(sourceLabel(side === "a" ? match.sourceA : match.sourceB))}</span></span>`;
+    };
+    return `<article class="consolation-match ${result ? `completed winner-${result.winnerSide}` : ""}" data-bracket-match="${attr(match.id)}" style="--match-y:${position}px">${sourceNode("a")}${sourceNode("b")}${numberNode}</article>`;
+  }
+
   function renderBracket(state, competition, draw, options) {
     const settings = options || {};
     const allMatches = Model.buildMatches(state, competition.id);
     const matches = allMatches.filter((match) => match.phase === "tournament");
     const placement = allMatches.find((match) => match.phase === "placement");
+    const consolation = allMatches.filter((match) => match.phase === "consolation").sort((a, b) => a.index - b.index);
     const eliminatedTeamIds = tournamentEliminatedTeamIds(state, matches);
     const advancedSeedMatchIds = tournamentAdvancedSeedMatchIds(state, matches);
     const roundCount = Math.log2(draw.tournament.size);
@@ -523,8 +545,11 @@
         if (sourcePositions.length) matchPositions.set(match.id, sourcePositions.reduce((sum, value) => sum + value, 0) / sourcePositions.length);
       });
     }
-    const bracketHeight = Math.max(360, leftHeight, rightHeight);
-    let html = `<div class="bracket-scroll pdf-bracket-scroll"><div class="bracket pdf-bracket" style="--bracket-height:${bracketHeight}px" data-bracket="${attr(competition.id)}"><svg class="bracket-svg" aria-hidden="true"></svg><div class="bracket-paper-title">${esc(competition.name)}トーナメント</div>`;
+    const mainHeight = Math.max(360, leftHeight, rightHeight);
+    const consolationStep = 72;
+    const consolationHeight = consolation.length ? consolation.length * consolationStep : mainHeight;
+    const bracketHeight = Math.max(mainHeight, consolationHeight);
+    let html = `<div class="bracket-scroll pdf-bracket-scroll"><div class="bracket pdf-bracket" style="--bracket-height:${bracketHeight}px;--main-height:${mainHeight}px;--consolation-height:${consolationHeight}px" data-bracket="${attr(competition.id)}"><svg class="bracket-svg" aria-hidden="true"></svg><div class="bracket-main"><div class="bracket-paper-title">${esc(competition.name)}トーナメント</div>`;
 
     for (let round = 0; round < roundCount - 1; round += 1) {
       const roundMatches = rounds[round];
@@ -535,7 +560,7 @@
     const finalMatch = rounds[roundCount - 1] && rounds[roundCount - 1][0];
     const champion = finalMatch ? Model.winnerOfMatch(state, finalMatch) : null;
     const finalPosition = finalMatch ? matchPositions.get(finalMatch.id) : bracketHeight / 2;
-    const placementPosition = Math.max(finalPosition + 120, bracketHeight - slotStep);
+    const placementPosition = Math.max(finalPosition + 120, mainHeight - slotStep);
     html += `<div class="bracket-center"><span class="bracket-outcome-label champion-label" style="--match-y:${finalPosition}px">優勝${champion && champion.type === "team" ? `　${esc(champion.team.name)}` : ""}</span>${finalMatch ? renderBracketMatchCard(state, competition, finalMatch, "center", finalPosition, eliminatedTeamIds, advancedSeedMatchIds, settings) : ""}${placement ? `<span class="bracket-outcome-label placement-label" style="--match-y:${placementPosition}px">3位</span>${renderBracketMatchCard(state, competition, placement, "center", placementPosition, eliminatedTeamIds, advancedSeedMatchIds, settings)}` : ""}</div>`;
 
     for (let round = roundCount - 2; round >= 0; round -= 1) {
@@ -543,7 +568,11 @@
       const half = Math.floor(roundMatches.length / 2);
       html += `<div class="bracket-round bracket-branch right-branch" data-round="${round}" data-side="right"><span class="round-title">${esc(roundMatches[half] ? roundMatches[half].roundName : "")}</span>${roundMatches.slice(half).map((match) => renderBracketMatchCard(state, competition, match, "right", matchPositions.get(match.id), eliminatedTeamIds, advancedSeedMatchIds, settings)).join("")}</div>`;
     }
-    const toolbarText = settings.editable ? ["対戦表から出場枠を編集", "チーム名を選択すると入れ替えできます"] : settings.readOnly ? ["試合番号を確認", "右の日程表へ同じ番号を配置します"] : ["PDF型・左右対称表示", "原本PDFと同じ細線レイアウトです"];
+    html += `</div>`;
+    if (consolation.length) {
+      html += `<aside class="consolation-branch" aria-label="コンソレーション試合">${consolation.map((match, index) => renderConsolationMatch(state, match, index * consolationStep + consolationStep / 2, settings)).join("")}</aside>`;
+    }
+    const toolbarText = settings.editable ? ["対戦表から出場枠を編集", "チーム名を選択すると入れ替えできます"] : settings.readOnly ? ["試合番号を確認", "数値・かな番号を日程表へ配置します"] : ["PDF準拠の対戦表", "右側にコンソレーション「あ〜た」を表示します"];
     const toolbar = `<div class="bracket-view-toolbar"><div><strong>${toolbarText[0]}</strong><span>${toolbarText[1]}</span></div><div class="tabs"><button class="tab ${ui.bracketZoom === "fit" ? "active" : ""}" type="button" data-bracket-zoom="fit">全体表示</button><button class="tab ${ui.bracketZoom === "detail" ? "active" : ""}" type="button" data-bracket-zoom="detail">拡大表示</button></div></div>`;
     return `${toolbar}${html}</div></div>`;
   }
@@ -711,7 +740,7 @@
       if (!days.has(day.key)) days.set(day.key, { label: day.label, slots: [] });
       days.get(day.key).slots.push(slot);
     });
-    const options = matches.slice().sort((a, b) => a.number - b.number).map((match) => {
+    const options = matches.slice().sort((a, b) => Model.matchNumberOrder(a.number) - Model.matchNumberOrder(b.number)).map((match) => {
       return { match, label: String(match.number) };
     });
     return `<div class="schedule-matrix-days">${[...days.values()].map((day) => `<section class="schedule-matrix-day"><h3>${esc(day.label)}</h3><div class="table-wrap"><table class="schedule-matrix-table"><thead><tr><th>時刻</th>${competition.venues.map((venue) => `<th>${esc(venue.name)}</th>`).join("")}</tr></thead><tbody>${day.slots.map((slot) => `<tr><th>${esc(formatDateTime(slot.start, false))}</th>${competition.venues.map((venue) => {

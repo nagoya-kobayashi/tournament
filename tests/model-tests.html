@@ -59,8 +59,13 @@
       state.results[firstA.id] = { winnerSide: "a", scoreA: "1", scoreB: "0" };
       let finalParticipants = M.participantsForMatch(state, final);
       assert(finalParticipants.a.type === "team" && finalParticipants.b.type === "pending", "片側未定の決勝参加者を解決");
+      const firstAParticipants = M.participantsForMatch(state, firstA);
+      const possibleFinalA = M.possibleTeamIds(state, "test", final.sourceA);
+      assert(possibleFinalA.size === 1 && possibleFinalA.has(firstAParticipants.a.team.id) && !possibleFinalA.has(firstAParticipants.b.team.id), "勝敗確定後は敗退チームを後続試合の候補から除外");
       state.results[final.id] = { winnerSide: "b", scoreA: "0", scoreB: "1" };
       assert(M.winnerOfMatch(state, final).type === "pending", "未定側を勝者として先行入力可能");
+      const unresolvedWinnerCandidates = M.possibleTeamIds(state, "test", { type: "matchWinner", matchId: final.id });
+      assert(unresolvedWinnerCandidates.size === 2 && !unresolvedWinnerCandidates.has(firstAParticipants.a.team.id), "相手チームが未定でも敗退確定チームを以後の候補から除外");
       state.results[firstB.id] = { winnerSide: "b", scoreA: "0", scoreB: "1" };
       finalParticipants = M.participantsForMatch(state, final);
       const expectedWinner = M.participantsForMatch(state, firstB).b.team.id;
